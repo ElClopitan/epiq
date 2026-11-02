@@ -23,14 +23,14 @@
 		"epiq-mcp": "dist/mcp.js"
 	},
 	"engines": {
-		"node": ">=18"
+		"node": ">=20"
 	},
 	"scripts": {
 		"build": "tsc --noEmit",
 		"build:gui:types": "tsc --noEmit -p source/gui/client/tsconfig.json",
 		"build:gui": "npm run build:gui:types && node source/scripts/build-gui.mjs",
 		"build:gui:dev": "EPIQ_GUI_DEV_BUILD=1 npm run build:gui",
-		"build:npm": "node source/scripts/write-version.mjs && node source/scripts/write-skill.mjs && rm -rf ./dist && npm run build:gui && esbuild index=source/cli.ts mcp=source/mcp/index.ts --bundle --splitting --packages=external --platform=node --format=esm --target=node18 --minify --outdir=dist --banner:js='#!/usr/bin/env node'",
+		"build:npm": "node source/scripts/write-version.mjs && node source/scripts/write-skill.mjs && rm -rf ./dist && npm run build:gui && esbuild index=source/cli.ts mcp=source/mcp/index.ts --bundle --splitting --packages=external --platform=node --format=esm --target=node18 --minify --outdir=dist --banner:js='#!/usr/bin/env node' && chmod +x dist/index.js dist/mcp.js",
 		"build:sea:bundle": "node source/scripts/write-version.mjs && node source/scripts/write-skill.mjs && node source/scripts/build-sea.mjs",
 		"build:sea": "node source/scripts/build-sea.mjs",
 		"build:publish": "npm run build:npm",
