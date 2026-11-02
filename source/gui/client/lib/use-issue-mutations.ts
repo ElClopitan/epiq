@@ -10,6 +10,7 @@ import {GuiContributor, GuiState} from './gui-state.model';
 import {GUI_THEME} from './gui-theme';
 import {BoardSocketActions} from './use-board-socket';
 import {IssueDetailPanel} from './use-issue-detail';
+import {placeholderId} from './placeholder-id';
 
 export type AttachmentUploadStatus =
 	| {state: 'idle'}
@@ -214,7 +215,7 @@ export const useIssueMutations = ({
 
 			const previousComments = prev.commentsByIssueId[issueId] ?? [];
 			const placeholderComment = {
-				id: `placeholder-comment-${crypto.randomUUID()}`,
+				id: placeholderId('placeholder-comment'),
 				issueId,
 				body,
 				isDeleted: false,
