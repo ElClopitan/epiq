@@ -46,7 +46,7 @@ test('your own comment can be edited and deleted', async ({
 
 	// Edit: the body is prefilled, Escape backs out untouched.
 	await page.getByTestId('edit-comment').click();
-	const editor = page.locator('aside textarea').first();
+	const editor = page.getByTestId('comment-editor');
 	await expect(editor).toHaveValue('first draft');
 	await editor.press('Escape');
 	await expect(page.locator('aside').getByText('first draft')).toBeVisible();
