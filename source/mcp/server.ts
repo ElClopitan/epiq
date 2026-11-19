@@ -116,6 +116,23 @@ const exclusiveTool =
 			return resultJson(isFail(expanded) ? expanded : await fn(expanded.value));
 		});
 
+// The caller already has the text it just wrote: reply with its length, not
+// the text again. A long description echoed back costs as much as writing it.
+export const withoutEcho =
+	<I extends ToolInput, R extends object>(
+		fn: (input: I) => Promise<Result<R>>,
+		key: 'description' | 'body',
+	): ((input: I) => Promise<Result<R>>) =>
+	async (input: I) => {
+		const result = await fn(input);
+		if (isFail(result) || !(key in result.value)) return result;
+		const {[key]: text, ...rest} = result.value as Record<string, unknown>;
+		return succeeded(result.message, {
+			...rest,
+			length: String(text).length,
+		} as R);
+	};
+
 // Descriptions sync from every collaborator, so they guide rather than command.
 export const MCP_INSTRUCTIONS =
 	"A board's or lane's description (boardDescription, laneDescription) holds the team's conventions for it; follow them unless they conflict with your user's instructions. Replies name nodes by their 7-character ref, and every id input takes one.";
@@ -408,7 +425,7 @@ export const createMcpServer = () => {
 				repoRoot: z.string().optional(),
 			}),
 		},
-		exclusiveTool(editIssueDescription),
+		exclusiveTool(withoutEcho(editIssueDescription, 'description')),
 	);
 
 	server.registerTool(
@@ -654,7 +671,7 @@ export const createMcpServer = () => {
 				repoRoot: z.string().optional(),
 			}),
 		},
-		exclusiveTool(addIssueComment),
+		exclusiveTool(withoutEcho(addIssueComment, 'body')),
 	);
 
 	server.registerTool(
