@@ -73,6 +73,8 @@ export type ApiIssueDetail = ApiIssue & {
 	comments: ApiIssueComment[];
 	/** Set when the earlier comments show their first lines only. */
 	olderComments?: string;
+	/** Set when latestComments left earlier comments out: how many. */
+	omittedComments?: number;
 };
 
 // One write over many tickets: which went through and which did not, and

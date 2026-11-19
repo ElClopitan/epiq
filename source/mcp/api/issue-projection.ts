@@ -53,11 +53,20 @@ const gistOf = (body: string) => {
 
 // The latest comments whole, every earlier one by its first lines: a
 // decision is almost always there, and the whole thread stays one call away.
+// With `latest`, only the last that many comments, whole, and a count of the
+// rest: a reader that only needs where a long thread stands pays for no gists.
 export const getIssueThread = (
 	issueId: string,
 	all = false,
-): Pick<ApiIssueDetail, 'comments' | 'olderComments'> => {
+	latest?: number,
+): Pick<ApiIssueDetail, 'comments' | 'olderComments' | 'omittedComments'> => {
 	const comments = getIssueComments(issueId);
+	if (!all && latest !== undefined) {
+		const omitted = Math.max(comments.length - latest, 0);
+		return omitted
+			? {comments: comments.slice(omitted), omittedComments: omitted}
+			: {comments};
+	}
 	const older = comments.length - RECENT_COMMENTS;
 	if (all || older <= 0) return {comments};
 
