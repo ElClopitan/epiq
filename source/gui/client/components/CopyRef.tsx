@@ -1,16 +1,6 @@
 import {useEffect, useRef, useState} from 'react';
 import {GUI_THEME} from '../lib/gui-theme';
-
-// The clipboard API needs a secure context, which localhost is; copying
-// silently does nothing on e.g. plain-http LAN hosts.
-const copyToClipboard = async (value: string): Promise<boolean> => {
-	try {
-		await navigator.clipboard.writeText(value);
-		return true;
-	} catch {
-		return false;
-	}
-};
+import {copyToClipboard} from '../lib/clipboard';
 
 export const CopyRef = ({refValue}: {refValue: string}) => {
 	const [copied, setCopied] = useState(false);
@@ -43,6 +33,7 @@ export const CopyRef = ({refValue}: {refValue: string}) => {
 				padding: 0,
 				cursor: 'pointer',
 				transition: 'color 120ms ease',
+				userSelect: 'text',
 			}}
 			onMouseEnter={event => {
 				if (!copied) event.currentTarget.style.color = GUI_THEME.accent;

@@ -2,17 +2,7 @@ import {useEffect, useRef, useState} from 'react';
 import {IconButton, ICON_SIZE} from './IconButton';
 import {IconCheck} from './IconCheck';
 import {IconCopy} from './IconCopy';
-
-// The clipboard API needs a secure context, which localhost is; copying
-// silently does nothing on e.g. plain-http LAN hosts.
-const copyToClipboard = async (value: string): Promise<boolean> => {
-	try {
-		await navigator.clipboard.writeText(value);
-		return true;
-	} catch {
-		return false;
-	}
-};
+import {copyToClipboard} from '../lib/clipboard';
 
 // Icon-only: what it copies lives in the tooltip, and the button stays lit for
 // a moment with a tick once it has copied.
