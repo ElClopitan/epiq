@@ -713,7 +713,7 @@ export const createMcpServer = () => {
 				repoRoot: z.string().optional(),
 			}),
 		},
-		exclusiveTool(editIssueComment),
+		exclusiveTool(withoutEcho(editIssueComment, 'body')),
 	);
 
 	server.registerTool(
