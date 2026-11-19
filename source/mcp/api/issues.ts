@@ -114,6 +114,7 @@ type EditIssueTitleInput = ToolInput & {
 type GetIssueInput = ToolInput & {
 	idOrRef: string;
 	allComments?: boolean;
+	latestComments?: number;
 };
 
 /** One issue, by full id or by its 7-character ref. */
@@ -167,7 +168,7 @@ export const getIssue = async (input: GetIssueInput) => {
 		tags: getIssueTags(issue),
 		assignees: getIssueAssignees(issue),
 		...goalFields(issue),
-		...getIssueThread(issue.id, input.allComments),
+		...getIssueThread(issue.id, input.allComments, input.latestComments),
 		...laneDescriptionOf(issue.parentNodeId),
 	} satisfies ApiIssueDetail & {laneDescription?: string});
 };

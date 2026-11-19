@@ -58,10 +58,14 @@ import {TheatrePlayer} from './components/TheatrePlayer';
 import {EventLog} from './components/EventLog';
 import {FollowBanner} from './components/FollowBanner';
 import {useAsideDock} from './lib/aside-dock';
+import {inspectorPanel} from './lib/inspector-panel';
+import {useGoalPanel} from './lib/use-goal-panel';
 import {CommandPalette} from './components/CommandPalette';
 import {buildCommandRegistry} from './lib/commands/command-registry';
 import {useRecentCommands} from './lib/commands/command-recents';
 import {useCommandPalette} from './lib/use-command-palette';
+import {applySelectionPatch, writeSelectionParams} from './lib/board-selection';
+import {showsGoalStrip} from './lib/goal-strip';
 import {moveIssue} from './lib/gui-move-issue';
 import {moveSwimlane} from './lib/gui-move-swimlane';
 import {DropTarget} from './lib/gui-result.model';
@@ -95,6 +99,7 @@ import {
 	FilterAxis,
 	isPeriodWindow,
 	issuePassesBoardFilter,
+	issueIdsInGoals,
 	windowIssueIds,
 	windowNamesIssues,
 } from './lib/scrubber';
@@ -126,6 +131,7 @@ import {
 import {useIssueDetail} from './lib/use-issue-detail';
 import {useRefDiffStats} from './lib/use-ref-diff-stats';
 import {useNeedleUrl} from './lib/needle-url';
+import {CLOSED_BOARD_ID} from '../../lib/board/static-ids.js';
 import {GoalDetails, GoalDetailsTab} from './components/GoalDetails';
 import {GoalStrip} from './components/GoalStrip';
 import {ManageGoalsModal} from './components/ManageGoalsModal';
@@ -167,6 +173,7 @@ type IssueDetailsTab = 'overview' | 'comments' | 'code' | 'stats';
 // Module scope so an absent state does not hand the memos below a new object
 // on every render.
 const EMPTY_COMMENTS: GuiState['commentsByIssueId'] = {};
+const NO_HIDDEN = new Map<string, number>();
 
 // The board's page margin, shared by <main>'s padding and the row's end spacer.
 const BOARD_GUTTER = 4;
@@ -437,10 +444,6 @@ export const App = () => {
 	const [laneTab, setLaneTab] = useState<SwimlaneDetailsTab>('overview');
 	// The board on screen's own panel, for the same reason.
 	const [boardDetailsOpen, setBoardDetailsOpen] = useState(false);
-	// The narrowed-to goal's panel, opened with its pill and with a link to it.
-	const [goalDetailsOpen, setGoalDetailsOpen] = useState(() =>
-		Boolean(selection.goal),
-	);
 
 	const commentsByIssueId = state?.commentsByIssueId ?? EMPTY_COMMENTS;
 
@@ -481,14 +484,6 @@ export const App = () => {
 
 	const [managingGoals, setManagingGoals] = useState(false);
 
-	// The bar beside a card's ref, fetched once for the repository.
-	const {stats: refDiffStats, onMessage: onRefDiffStatsMessage} =
-		useRefDiffStats({
-			socketEpoch,
-			asOfTime: scrubCut(state?.timeTravel),
-			sendRaw,
-		});
-
 	// The card a linkified ticket ref shows on hover. Most of it is already in
 	// `state`; only the description excerpt is fetched.
 	const {
@@ -515,6 +510,15 @@ export const App = () => {
 	const updateInfo = useUpdateInfo({socketEpoch, sendRaw});
 	// The other repos whose commits count as the board's.
 	const repos = useRepos({open: settingsOpen, sendRaw, socketEpoch});
+	// The bar beside a card's ref, fetched once for the repository and again
+	// when another repo's commits move.
+	const {stats: refDiffStats, onMessage: onRefDiffStatsMessage} =
+		useRefDiffStats({
+			socketEpoch,
+			reposChanged: repos.changed,
+			asOfTime: scrubCut(state?.timeTravel),
+			sendRaw,
+		});
 	const registeredRepoIds = useMemo(
 		() => repos.data?.repos.map(repo => repo.id) ?? null,
 		[repos.data],
@@ -704,28 +708,72 @@ export const App = () => {
 			),
 		});
 
-	// The goal the board is narrowed to, only while it is still one of this board's.
-	const isolatedGoalId =
-		selection.goal &&
-		selectedBoard?.goals.some(goal => goal.id === selection.goal)
-			? selection.goal
-			: null;
-	// Narrowing to a goal opens its panel over whatever the inspector held.
+	// The same for goals, from a pill or a card's goal label.
+	const goalOnly = narrowedIds(selection.only.goal);
+	const isolatedGoalId = goalOnly?.length === 1 ? goalOnly[0] ?? null : null;
+	const goalPanel = useGoalPanel({
+		goals: state?.goals,
+		board: selectedBoard,
+		scrubbing: state?.timeTravel?.mode === 'scrub',
+		issueId,
+	});
 	const filterByGoal = (goalId: string) => {
-		const narrowing = isolatedGoalId !== goalId;
-		setGoalDetailsOpen(narrowing);
-		if (narrowing) {
-			setCommitDiff(null);
-			setDetailsSwimlaneId(null);
-			setBoardDetailsOpen(false);
-			clearPicked();
-		}
-		changeSelection({goal: narrowing ? goalId : null});
+		const next = isolateOnly(goalOnly, goalId);
+		// A pick left on a ticket the filter hides would still move with the rest.
+		if (next) clearPicked();
+		changeSelection({
+			only: withNarrowing(selection.only, 'goal', next ?? undefined),
+		});
 	};
-	const detailedGoal =
-		goalDetailsOpen && isolatedGoalId
-			? state?.goals.find(goal => goal.id === isolatedGoalId) ?? null
-			: null;
+	// Over whatever the inspector held.
+	const openGoalPanel = (id: string, boardId = selectedBoardId) => {
+		goalPanel.open(id, boardId);
+		setCommitDiff(null);
+		setDetailsSwimlaneId(null);
+		setBoardDetailsOpen(false);
+		clearPicked();
+		// One subject: the ticket goes too. Another board's goal navigates there.
+		if (issueId && boardId === selectedBoardId) closeIssueDetails();
+	};
+	// A closed or removed goal is off every working board, so the axis lets it
+	// go. A scrub only looks at the past, and leaves the filter for the way back.
+	const goneGoalIds =
+		state &&
+		state.timeTravel?.mode !== 'scrub' &&
+		selectedBoard &&
+		selectedBoard.id !== CLOSED_BOARD_ID &&
+		goalOnly
+			? goalOnly.filter(
+					id => !state.goals.some(goal => goal.id === id && !goal.closed),
+			  )
+			: [];
+	const goneGoalKey = goneGoalIds.join();
+	useEffect(() => {
+		if (!goneGoalKey || !goalOnly) return;
+		const kept = goalOnly.filter(id => !goneGoalIds.includes(id));
+		changeSelection({
+			only: withNarrowing(
+				selection.only,
+				'goal',
+				kept.length > 0 ? kept : undefined,
+			),
+		});
+		// Again whenever the narrowing moves: a pending URL write can bring a gone goal back.
+	}, [goneGoalKey, goalOnly?.join()]);
+	const detailedGoal = goalPanel.goal;
+	// One navigation, so no render stands on the old board narrowed to it.
+	const openClosedGoal = (goalId: string) => {
+		setManagingGoals(false);
+		openGoalPanel(goalId, CLOSED_BOARD_ID);
+		const params = new URLSearchParams();
+		writeSelectionParams(
+			params,
+			applySelectionPatch(selection, {
+				only: withNarrowing(selection.only, 'goal', [goalId]),
+			}),
+		);
+		void navigate(`/board/${nodeRef(CLOSED_BOARD_ID)}?${params}`);
+	};
 	const [goalTab, setGoalTab] = useState<GoalDetailsTab>('overview');
 	// Walks every ticket, so only while a tab that needs it is open.
 	const codeGoalId =
@@ -779,13 +827,28 @@ export const App = () => {
 		}
 		const users = [...people.values()];
 
+		// The board's goals, and any the axis names that are off it, so they can be unticked.
+		const goals = (state?.goals ?? []).filter(
+			goal =>
+				selectedBoard?.goals.some(onBoard => onBoard.id === goal.id) ||
+				goalOnly?.includes(goal.id),
+		);
+
 		return {
 			tag: state?.tags ?? [],
+			goal: goals.map(({id, name, color}) => ({id, name, color})),
 			commenter: users,
 			assignee: users,
 			actor: users,
 		} satisfies Record<FilterAxis, GuiEventIdentity[]>;
-	}, [state?.tags, state?.contributors, contributors]);
+	}, [
+		state?.tags,
+		state?.contributors,
+		contributors,
+		state?.goals,
+		selectedBoard?.goals,
+		goalOnly,
+	]);
 
 	// Every ticket on every board by its ref, for the chart: it plots the
 	// repository, so a link there can name a ticket on any board.
@@ -837,34 +900,42 @@ export const App = () => {
 		[state?.boards],
 	);
 
-	// The tickets the text query keeps, or null with no query.
-	const queryIssueIds = useMemo(() => {
+	// The tickets the text query and the goal axis keep, or null while neither
+	// asks. Goals span boards, so their tickets are read off every board.
+	const filterIssueIds = useMemo(() => {
 		const query = textFilter.trim();
-		if (!query || !selectedBoard) return null;
+		const goals = selection.only.goal;
+		const byQuery =
+			query && selectedBoard
+				? new Set(
+						selectedBoard.swimlanes.flatMap(swimlane =>
+							swimlane.issues
+								.filter(issue => issueMatchesText(issue, query))
+								.map(issue => issue.id),
+						),
+				  )
+				: null;
+		if (goals === undefined) return byQuery;
 
-		return new Set(
-			selectedBoard.swimlanes.flatMap(swimlane =>
-				swimlane.issues
-					.filter(issue => issueMatchesText(issue, query))
-					.map(issue => issue.id),
-			),
-		);
-	}, [selectedBoard, textFilter]);
+		const byGoal = issueIdsInGoals(state?.boards ?? [], goals);
+		return byQuery === null
+			? byGoal
+			: new Set([...byQuery].filter(id => byGoal.has(id)));
+	}, [selectedBoard, textFilter, selection.only.goal, state?.boards]);
 
 	// Returns the lanes untouched when nothing is filtered, keeping SwimlaneColumn's memo.
-	const {visibleSwimlanes, hiddenIssueCount} = useMemo(() => {
+	const {visibleSwimlanes, hiddenByLane} = useMemo(() => {
 		const swimlanes = selectedBoard?.swimlanes ?? [];
 		const query = textFilter.trim();
 		if (
 			boardFilter.length === 0 &&
 			!query &&
 			windowIds === null &&
-			!isolatedIssueId &&
-			!isolatedGoalId
+			!isolatedIssueId
 		)
-			return {visibleSwimlanes: swimlanes, hiddenIssueCount: 0};
+			return {visibleSwimlanes: swimlanes, hiddenByLane: NO_HIDDEN};
 
-		let hidden = 0;
+		const hidden = new Map<string, number>();
 
 		const visible = swimlanes.map(swimlane => {
 			const issues = swimlane.issues.filter(
@@ -884,16 +955,15 @@ export const App = () => {
 					) &&
 					issueMatchesText(issue, query) &&
 					(windowIds === null || windowIds.has(issue.id)) &&
-					(!isolatedIssueId || issue.id === isolatedIssueId) &&
-					(!isolatedGoalId || issue.goal?.id === isolatedGoalId),
+					(!isolatedIssueId || issue.id === isolatedIssueId),
 			);
 
-			hidden += swimlane.issues.length - issues.length;
+			hidden.set(swimlane.id, swimlane.issues.length - issues.length);
 
 			return {...swimlane, issues};
 		});
 
-		return {visibleSwimlanes: visible, hiddenIssueCount: hidden};
+		return {visibleSwimlanes: visible, hiddenByLane: hidden};
 	}, [
 		selectedBoard,
 		boardFilter,
@@ -902,8 +972,13 @@ export const App = () => {
 		eventActorIds,
 		windowIds,
 		isolatedIssueId,
-		isolatedGoalId,
 	]);
+	// The text box is the open board's: it empties once another board is on screen.
+	const textFilterBoardId = useRef(selectedBoardId);
+	useEffect(() => {
+		if (textFilterBoardId.current !== selectedBoardId) setTextFilter('');
+		textFilterBoardId.current = selectedBoardId;
+	}, [selectedBoardId]);
 	const attachmentsByIssueId = state?.attachmentsByIssueId ?? {};
 
 	// Reads every frame; the connection itself is `useBoardSocket`'s.
@@ -1164,7 +1239,10 @@ export const App = () => {
 	};
 
 	const selectIssue = (nextIssueId: string, {toggle} = {toggle: false}) => {
-		if (toggle) return togglePicked(nextIssueId);
+		if (toggle) {
+			goalPanel.close();
+			return togglePicked(nextIssueId);
+		}
 
 		// The ticket panel renders only while no commit diff does, so a diff left
 		// open by an earlier dot click would hide the ticket just asked for.
@@ -1173,7 +1251,7 @@ export const App = () => {
 		// would hide the ticket just asked for the same way.
 		setDetailsSwimlaneId(null);
 		setBoardDetailsOpen(false);
-		setGoalDetailsOpen(false);
+		goalPanel.close();
 
 		// A plain click both opens the ticket and makes it the selection, so a
 		// following modifier-click extends from it instead of starting over.
@@ -1195,7 +1273,7 @@ export const App = () => {
 		clearPicked();
 		closeIssueDetails();
 		setBoardDetailsOpen(false);
-		setGoalDetailsOpen(false);
+		goalPanel.close();
 		const open = detailsSwimlaneId === swimlaneId && laneTab === tab;
 		setDetailsSwimlaneId(open ? null : swimlaneId);
 		setLaneTab(tab);
@@ -1206,7 +1284,7 @@ export const App = () => {
 		clearPicked();
 		closeIssueDetails();
 		setDetailsSwimlaneId(null);
-		setGoalDetailsOpen(false);
+		goalPanel.close();
 		setBoardDetailsOpen(open => !open);
 	};
 
@@ -1223,6 +1301,8 @@ export const App = () => {
 			// findIssue resolves a ref across every board, so opening by ref works
 			// even when the ticket lives on one the reader isn't looking at.
 			onOpen: (ref: string) => {
+				// By hand too: the ticket on the URL already changes nothing there.
+				goalPanel.close();
 				if (boardSlug) void navigate(`/board/${boardSlug}/issue/${ref}`);
 			},
 		}),
@@ -1245,7 +1325,7 @@ export const App = () => {
 		if (!board) return;
 
 		setCommitDiff(null);
-		setGoalDetailsOpen(false);
+		goalPanel.close();
 
 		const params = new URLSearchParams({tab});
 		if (diffView) writeDiffViewParam(params, diffView === 'flat');
@@ -1482,7 +1562,7 @@ export const App = () => {
 		commits: plottedCommits,
 		selection,
 		selectedIssueId: selectedIssue?.id ?? null,
-		queryIssueIds,
+		filterIssueIds,
 		linkedCommitsOnly,
 		boardIssueIdByRef,
 		issueIdByRef,
@@ -1627,11 +1707,27 @@ export const App = () => {
 		return () => clearTimeout(timeout);
 	}, [actionError]);
 
+	const clearBoardFilter = () => {
+		changeSelection({only: {}, windowOnly: false, ticketOnly: false});
+		setTextFilter('');
+	};
+
 	const selectBoard = (nextBoardId: string) => {
 		setBoardMenuOpen(false);
 		clearDragState();
+		if (nextBoardId === selectedBoardId) {
+			void navigate(`/board/${nodeRef(nextBoardId)}`);
+			return;
+		}
 
-		void navigate(`/board/${nodeRef(nextBoardId)}`);
+		// The window and the one ticket are this board's; tag, contributor and goal follow you.
+		// In the one navigation, so an unsent-text prompt that blocks it keeps the filter.
+		const params = new URLSearchParams();
+		writeSelectionParams(
+			params,
+			applySelectionPatch(selection, {windowOnly: false, ticketOnly: false}),
+		);
+		void navigate(`/board/${nodeRef(nextBoardId)}?${params}`);
 	};
 
 	const openCreateIssueModal = (swimlaneId: string) => {
@@ -1781,6 +1877,21 @@ export const App = () => {
 	// The lane as the board has it now, including a replayed board.
 	const detailsSwimlane =
 		shownSwimlanes.find(swimlane => swimlane.id === detailsSwimlaneId) ?? null;
+	const inspector = inspectorPanel({
+		playing: theatre !== null,
+		commitDiff: commitDiff !== null,
+		lane: detailsSwimlane !== null,
+		boardDetails: boardDetailsOpen,
+		boardOnScreen: selectedBoard !== null && selectedBoard !== undefined,
+		goal: detailedGoal !== null,
+		pickedCount: pickedIssues.length,
+		issue: Boolean(selectedIssue && state?.user),
+	});
+	// What outranks it in the inspector leaves its panel open underneath.
+	const shownGoal = inspector === 'goal' ? detailedGoal : null;
+
+	const toggleGoalPanel = (goalId: string) =>
+		shownGoal?.id === goalId ? goalPanel.close() : openGoalPanel(goalId);
 
 	// Read off the drop event: a drag can start in another window.
 	const dropSwimlane = (swimlaneId: string) => {
@@ -1932,7 +2043,7 @@ export const App = () => {
 												state?.boards.map(board => ({
 													id: board.id,
 													label: board.title,
-													// Counted here, as the TUI's board list says it.
+													// Every ticket on the board, whatever the filter hides.
 													hint: plural(
 														board.swimlanes.reduce(
 															(total, swimlane) =>
@@ -1978,6 +2089,12 @@ export const App = () => {
 							</div>
 
 							<TimeScrubber
+								footLegend={
+									selectedBoard &&
+									showsGoalStrip(selectedBoard, state?.goals ?? [])
+										? 'Goals'
+										: null
+								}
 								timeline={history.timeline}
 								commits={history.commits}
 								historyId={history.requestId}
@@ -2020,7 +2137,7 @@ export const App = () => {
 								}
 								textFilter={textFilter}
 								onChangeTextFilter={setTextFilter}
-								queryIssueIds={queryIssueIds}
+								filterIssueIds={filterIssueIds}
 								knownIdentities={knownIdentities}
 								refreshOn={historyTick}
 								following={following}
@@ -2098,24 +2215,27 @@ export const App = () => {
 										overflow: 'hidden',
 									}}
 								>
-									{selectedBoard && selectedBoard.goals.length > 0 && (
-										<GoalStrip
-											goals={selectedBoard.goals}
-											isolatedGoalId={isolatedGoalId}
-											onFilterByGoal={filterByGoal}
-											onManage={
-												selectedBoard.readonly
-													? undefined
-													: () => setManagingGoals(true)
-											}
-										/>
-									)}
+									{selectedBoard &&
+										showsGoalStrip(selectedBoard, state?.goals ?? []) && (
+											<GoalStrip
+												goals={selectedBoard.goals}
+												narrowedGoalIds={goalOnly}
+												selectedGoalId={shownGoal?.id ?? null}
+												onOpenGoal={toggleGoalPanel}
+												onManage={
+													selectedBoard.readonly
+														? undefined
+														: () => setManagingGoals(true)
+												}
+											/>
+										)}
 									{managingGoals && (
 										<ManageGoalsModal
 											goals={state?.goals ?? []}
 											onCreate={name => createGoal(name)}
 											onRename={renameGoal}
 											onRemove={removeGoal}
+											onOpenClosed={openClosedGoal}
 											onClose={() => setManagingGoals(false)}
 										/>
 									)}
@@ -2148,7 +2268,10 @@ export const App = () => {
 													detailsSwimlaneId === swimlane.id ? laneTab : null
 												}
 												onOpenDetails={openSwimlaneDetails}
-												selected={false}
+												selected={
+													inspector === 'lane' &&
+													detailsSwimlaneId === swimlane.id
+												}
 												selectedIssueId={selectedIssue?.id ?? null}
 												commentsByIssueId={commentsByIssueId}
 												dragOver={dragOverSwimlaneId === swimlane.id}
@@ -2166,6 +2289,8 @@ export const App = () => {
 												onFilterByGoal={filterByGoal}
 												isolatedAssigneeId={isolatedAssigneeId}
 												onFilterByAssignee={filterByAssignee}
+												hiddenByFilter={hiddenByLane.get(swimlane.id) ?? 0}
+												onClearFilter={clearBoardFilter}
 												onCreateIssue={openCreateIssueModal}
 												dropSide={
 													swimlaneDropEdge?.swimlaneId === swimlane.id
@@ -2215,13 +2340,11 @@ export const App = () => {
 
 										{/* Reserves the closed side panel's width (also closed by a film), so the
 										board keeps its max scrollLeft and does not bounce back. */}
-										{asideDock === 'right' &&
-											(theatre ||
-												(!commitDiff && !(selectedIssue && state?.user))) && (
-												<div
-													style={{width: readStoredAsideWidth(), flexShrink: 0}}
-												/>
-											)}
+										{asideDock === 'right' && inspector === 'none' && (
+											<div
+												style={{width: readStoredAsideWidth(), flexShrink: 0}}
+											/>
+										)}
 
 										{/* The page's right margin, scrolling with the columns. Constant,
 							so it cancels out of the invariant above. */}
@@ -2231,7 +2354,7 @@ export const App = () => {
 							</div>
 
 							{/* Side panels close for the film; the ticket stays selected. */}
-							{!theatre && commitDiff && (
+							{inspector === 'diff' && commitDiff && (
 								<Aside dock={asideDock} onWidthChange={setCommitDiffPanelWidth}>
 									{({isFullscreen, toggleFullscreen}) => (
 										<DiffPanel
@@ -2260,7 +2383,7 @@ export const App = () => {
 								</Aside>
 							)}
 
-							{!theatre && !commitDiff && detailsSwimlane && (
+							{inspector === 'lane' && detailsSwimlane && (
 								<SwimlaneDetails
 									dock={asideDock}
 									swimlane={detailsSwimlane}
@@ -2283,236 +2406,213 @@ export const App = () => {
 								/>
 							)}
 
-							{!theatre &&
-								!commitDiff &&
-								!detailsSwimlane &&
-								boardDetailsOpen &&
-								selectedBoard && (
-									<BoardDetails
-										dock={asideDock}
-										board={selectedBoard}
-										overview={boardOverview}
-										live={state?.timeTravel?.mode !== 'scrub'}
-										onSaveDescription={text =>
-											saveNodeDescription(
-												{kind: 'board', id: selectedBoard.id},
-												text,
-											)
-										}
-										onClose={() => setBoardDetailsOpen(false)}
-									/>
-								)}
+							{inspector === 'board' && selectedBoard && (
+								<BoardDetails
+									dock={asideDock}
+									board={selectedBoard}
+									overview={boardOverview}
+									live={state?.timeTravel?.mode !== 'scrub'}
+									onSaveDescription={text =>
+										saveNodeDescription(
+											{kind: 'board', id: selectedBoard.id},
+											text,
+										)
+									}
+									onClose={() => setBoardDetailsOpen(false)}
+								/>
+							)}
 
-							{!theatre &&
-								!commitDiff &&
-								!detailsSwimlane &&
-								!boardDetailsOpen &&
-								detailedGoal &&
-								selectedBoard &&
-								state && (
-									<GoalDetails
-										dock={asideDock}
-										goal={detailedGoal}
-										boards={state.boards}
-										boardId={selectedBoard.id}
-										tab={goalTab}
-										onChangeTab={setGoalTab}
-										commits={goalCommits}
-										commitDiffsBySha={issueCommitDiffs}
-										onLoadCommitDiff={loadIssueCommitDiff}
-										stats={goalStats}
-										readonly={selectedBoard.readonly || offline}
-										onSaveDescription={text =>
-											saveNodeDescription(
-												{kind: 'goal', id: detailedGoal.id},
-												text,
-											)
-										}
-										onOpenIssue={(id, boardRef) => {
-											setPickedIssueIds([id]);
-											openIssueTab(id, 'overview', boardRef);
-										}}
-										onClose={() => setGoalDetailsOpen(false)}
-									/>
-								)}
+							{inspector === 'goal' && shownGoal && selectedBoard && state && (
+								<GoalDetails
+									dock={asideDock}
+									goal={shownGoal}
+									boards={state.boards}
+									boardId={selectedBoard.id}
+									tab={goalTab}
+									onChangeTab={setGoalTab}
+									commits={goalCommits}
+									commitDiffsBySha={issueCommitDiffs}
+									onLoadCommitDiff={loadIssueCommitDiff}
+									stats={goalStats}
+									// A goal isn't board content: the Closed board's lock leaves it be.
+									readonly={state.timeTravel?.mode === 'scrub' || offline}
+									onSaveDescription={text =>
+										saveNodeDescription({kind: 'goal', id: shownGoal.id}, text)
+									}
+									onOpenIssue={(id, boardRef) => {
+										setPickedIssueIds([id]);
+										openIssueTab(id, 'overview', boardRef);
+									}}
+									previewFor={ticketPreviewFor}
+									requestPreview={requestTicketPreview}
+									onClose={() => goalPanel.close()}
+								/>
+							)}
 
-							{!theatre &&
-								!commitDiff &&
-								!detailsSwimlane &&
-								!boardDetailsOpen &&
-								!detailedGoal &&
-								pickedIssues.length > 1 && (
-									<BulkDetails
-										dock={asideDock}
-										issues={pickedIssues}
-										knownTags={state?.tags ?? []}
-										knownAssignees={contributors}
-										tagName={bulkTagName}
-										assigneeName={bulkAssigneeName}
-										onChangeTagName={setBulkTagName}
-										onChangeAssigneeName={setBulkAssigneeName}
-										onAddTag={name => {
-											forPicked(id => addIssueTag(id, name));
-											setBulkTagName('');
-										}}
-										onRemoveTag={tagId =>
-											forPicked(id => removeIssueTag(id, tagId))
+							{inspector === 'bulk' && (
+								<BulkDetails
+									dock={asideDock}
+									issues={pickedIssues}
+									knownTags={state?.tags ?? []}
+									knownAssignees={contributors}
+									tagName={bulkTagName}
+									assigneeName={bulkAssigneeName}
+									onChangeTagName={setBulkTagName}
+									onChangeAssigneeName={setBulkAssigneeName}
+									onAddTag={name => {
+										forPicked(id => addIssueTag(id, name));
+										setBulkTagName('');
+									}}
+									onRemoveTag={tagId =>
+										forPicked(id => removeIssueTag(id, tagId))
+									}
+									onAddAssignee={assigneeId =>
+										forPicked(id => addIssueAssignee(id, assigneeId))
+									}
+									onRemoveAssignee={assigneeId =>
+										forPicked(id => removeIssueAssignee(id, assigneeId))
+									}
+									onCloseIssues={() => {
+										// Skips the ones already closed: the event log would otherwise
+										// carry a second "Closed" for each of them.
+										for (const issue of pickedIssues) {
+											if (!issue.isClosed) closeIssue(issue.id);
 										}
-										onAddAssignee={assigneeId =>
-											forPicked(id => addIssueAssignee(id, assigneeId))
+										clearPicked();
+									}}
+									onReopenIssues={() => {
+										for (const issue of pickedIssues) {
+											if (issue.isClosed) reopenIssue(issue.id);
 										}
-										onRemoveAssignee={assigneeId =>
-											forPicked(id => removeIssueAssignee(id, assigneeId))
-										}
-										onCloseIssues={() => {
-											// Skips the ones already closed: the event log would otherwise
-											// carry a second "Closed" for each of them.
-											for (const issue of pickedIssues) {
-												if (!issue.isClosed) closeIssue(issue.id);
-											}
-											clearPicked();
-										}}
-										onReopenIssues={() => {
-											for (const issue of pickedIssues) {
-												if (issue.isClosed) reopenIssue(issue.id);
-											}
-											clearPicked();
-										}}
-										onClear={clearPicked}
-									/>
-								)}
+										clearPicked();
+									}}
+									onClear={clearPicked}
+								/>
+							)}
 
-							{!theatre &&
-								!commitDiff &&
-								!detailsSwimlane &&
-								!boardDetailsOpen &&
-								!detailedGoal &&
-								pickedIssues.length <= 1 &&
-								selectedIssue &&
-								state?.user && (
-									<IssueDetails
-										dock={asideDock}
-										onDock={setAsideDock}
-										whoAmI={state.user}
-										issue={((): GuiIssue => {
-											const base =
-												issueDetail?.issueId === selectedIssue.id
-													? {
-															...selectedIssue,
-															description: issueDetail.description,
-													  }
-													: selectedIssue;
-
-											return offline ? {...base, readonly: true} : base;
-										})()}
-										activeTab={selectedTab}
-										comments={
+							{inspector === 'issue' && selectedIssue && state?.user && (
+								<IssueDetails
+									dock={asideDock}
+									onDock={setAsideDock}
+									whoAmI={state.user}
+									issue={((): GuiIssue => {
+										const base =
 											issueDetail?.issueId === selectedIssue.id
-												? issueDetail.comments
-												: []
-										}
-										onChangeTab={changeIssueDetailsTab}
-										onClose={closeIssueDetails}
-										timelineNarrowed={selection.ticketOnly}
-										timelineCapped={
-											selection.ticketOnly &&
-											!windowNamesIssues(history.timeline)
-										}
-										canNarrowTimeline={connected || selection.ticketOnly}
-										onChangeTimelineNarrowed={next =>
-											changeSelection({ticketOnly: next})
-										}
-										onEditTitle={editIssueTitle}
-										onEditDescription={editIssueDescription}
-										onAddTag={addIssueTag}
-										onRemoveTag={removeIssueTag}
-										goals={state?.goals ?? []}
-										onSetGoal={setIssueGoal}
-										{...(selectedIssue &&
-											!selectedIssue.readonly && {
-												onCreateGoal: (name: string) =>
-													createGoal(name, selectedIssue.id),
-												onManageGoals: () => setManagingGoals(true),
-											})}
-										onAddAssignee={addIssueAssignee}
-										onAddExternalAssignee={addExternalIssueAssignee}
-										onRemoveContributor={removeContributor}
-										onDeleteTag={removeTag}
-										onRemoveAssignee={removeIssueAssignee}
-										onAddComment={addIssueComment}
-										onDeleteComment={deleteIssueComment}
-										onEditComment={editIssueComment}
-										onFileTicket={fileTicketFromSelection}
-										onOpenDiffLocation={openDiffLocation}
-										diffFocus={diffFocus}
-										diffFocusRequest={commitOpenRequest.current}
-										focusedCommentId={focusedCommentId}
-										attachments={attachmentsByIssueId[selectedIssue.id] ?? []}
-										attachmentUploadStatus={attachmentUploadStatus}
-										onUploadAttachments={uploadIssueAttachments}
-										onDeleteAttachment={deleteIssueAttachment}
-										commits={
-											issueCommits?.issueId === selectedIssue.id
-												? issueCommits.commits
-												: []
-										}
-										// No entry for this ticket yet means its fetch is about to be
-										// sent, not that it has nothing.
-										commitsLoading={
-											issueCommits?.issueId === selectedIssue.id
-												? issueCommits.loading
-												: true
-										}
-										commitsError={
-											issueCommits?.issueId === selectedIssue.id
-												? issueCommits.error
-												: null
-										}
-										commitDiffsBySha={issueCommitDiffs}
-										onLoadCommitDiff={loadIssueCommitDiff}
-										diffView={{
-											compacted: compactedDiff,
-											onChangeCompacted: chooseDiffView,
-											squashed:
-												issueSquashedDiff?.issueId === selectedIssue.id
-													? issueSquashedDiff.diff
-													: null,
-											// No entry for this ticket yet means its fetch is about to
-											// be sent, not that it has nothing.
-											loading:
-												issueSquashedDiff?.issueId === selectedIssue.id
-													? issueSquashedDiff.loading
-													: true,
-											error:
-												issueSquashedDiff?.issueId === selectedIssue.id
-													? issueSquashedDiff.error
-													: null,
-										}}
-										stats={
-											issueStats?.issueId === selectedIssue.id
-												? issueStats.stats
-												: null
-										}
-										statsLoading={
-											issueStats?.issueId === selectedIssue.id
-												? issueStats.loading
-												: true
-										}
-										onOpenStatsFile={openStatsFile}
-										boardStats={boardStats}
-										activity={issueActivity}
-										statsError={
-											issueStats?.issueId === selectedIssue.id
-												? issueStats.error
-												: null
-										}
-										onReopenIssue={reopenIssue}
-										onCloseIssue={closeIssue}
-										knownTags={state.tags ?? []}
-										knownAssignees={contributors}
-										onOpenAssigneePicker={requestContributors}
-									/>
-								)}
+												? {
+														...selectedIssue,
+														description: issueDetail.description,
+												  }
+												: selectedIssue;
+
+										return offline ? {...base, readonly: true} : base;
+									})()}
+									activeTab={selectedTab}
+									comments={
+										issueDetail?.issueId === selectedIssue.id
+											? issueDetail.comments
+											: []
+									}
+									onChangeTab={changeIssueDetailsTab}
+									onClose={closeIssueDetails}
+									timelineNarrowed={selection.ticketOnly}
+									timelineCapped={
+										selection.ticketOnly && !windowNamesIssues(history.timeline)
+									}
+									canNarrowTimeline={connected || selection.ticketOnly}
+									onChangeTimelineNarrowed={next =>
+										changeSelection({ticketOnly: next})
+									}
+									onEditTitle={editIssueTitle}
+									onEditDescription={editIssueDescription}
+									onAddTag={addIssueTag}
+									onRemoveTag={removeIssueTag}
+									goals={state?.goals ?? []}
+									onSetGoal={setIssueGoal}
+									{...(selectedIssue &&
+										!selectedIssue.readonly && {
+											onCreateGoal: (name: string) =>
+												createGoal(name, selectedIssue.id),
+											onManageGoals: () => setManagingGoals(true),
+										})}
+									onAddAssignee={addIssueAssignee}
+									onAddExternalAssignee={addExternalIssueAssignee}
+									onRemoveContributor={removeContributor}
+									onDeleteTag={removeTag}
+									onRemoveAssignee={removeIssueAssignee}
+									onAddComment={addIssueComment}
+									onDeleteComment={deleteIssueComment}
+									onEditComment={editIssueComment}
+									onFileTicket={fileTicketFromSelection}
+									onOpenDiffLocation={openDiffLocation}
+									diffFocus={diffFocus}
+									diffFocusRequest={commitOpenRequest.current}
+									focusedCommentId={focusedCommentId}
+									attachments={attachmentsByIssueId[selectedIssue.id] ?? []}
+									attachmentUploadStatus={attachmentUploadStatus}
+									onUploadAttachments={uploadIssueAttachments}
+									onDeleteAttachment={deleteIssueAttachment}
+									commits={
+										issueCommits?.issueId === selectedIssue.id
+											? issueCommits.commits
+											: []
+									}
+									// No entry for this ticket yet means its fetch is about to be
+									// sent, not that it has nothing.
+									commitsLoading={
+										issueCommits?.issueId === selectedIssue.id
+											? issueCommits.loading
+											: true
+									}
+									commitsError={
+										issueCommits?.issueId === selectedIssue.id
+											? issueCommits.error
+											: null
+									}
+									commitDiffsBySha={issueCommitDiffs}
+									onLoadCommitDiff={loadIssueCommitDiff}
+									diffView={{
+										compacted: compactedDiff,
+										onChangeCompacted: chooseDiffView,
+										squashed:
+											issueSquashedDiff?.issueId === selectedIssue.id
+												? issueSquashedDiff.diff
+												: null,
+										// No entry for this ticket yet means its fetch is about to
+										// be sent, not that it has nothing.
+										loading:
+											issueSquashedDiff?.issueId === selectedIssue.id
+												? issueSquashedDiff.loading
+												: true,
+										error:
+											issueSquashedDiff?.issueId === selectedIssue.id
+												? issueSquashedDiff.error
+												: null,
+									}}
+									stats={
+										issueStats?.issueId === selectedIssue.id
+											? issueStats.stats
+											: null
+									}
+									statsLoading={
+										issueStats?.issueId === selectedIssue.id
+											? issueStats.loading
+											: true
+									}
+									onOpenStatsFile={openStatsFile}
+									boardStats={boardStats}
+									activity={issueActivity}
+									statsError={
+										issueStats?.issueId === selectedIssue.id
+											? issueStats.error
+											: null
+									}
+									onReopenIssue={reopenIssue}
+									onCloseIssue={closeIssue}
+									knownTags={state.tags ?? []}
+									knownAssignees={contributors}
+									onOpenAssigneePicker={requestContributors}
+								/>
+							)}
 						</div>
 
 						{theatre && (

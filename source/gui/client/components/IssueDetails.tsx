@@ -1,3 +1,4 @@
+import {scrollGutter} from '../lib/scroll-gutter.style';
 import React, {useEffect, useRef, useState} from 'react';
 import {SANS_FONT, GUI_THEME, TEXT} from '../lib/gui-theme';
 import {
@@ -242,7 +243,17 @@ const Lane = ({
 					</IconButton>
 				)}
 			</div>
-			<div style={{flex: 1, minHeight: 0, overflowY: 'auto'}}>{children}</div>
+			{/* The scrollbar in the gap beside the lane, clear of its content. */}
+			<div
+				style={{
+					flex: 1,
+					minHeight: 0,
+					overflowY: 'auto',
+					...scrollGutter(LANE_GAP),
+				}}
+			>
+				{children}
+			</div>
 		</div>
 	);
 };
@@ -1040,12 +1051,14 @@ export const IssueDetails = ({
 				return (
 					<>
 						{issue ? (
+							// A column in both views: header, title and tabs stay put, and
+							// only what is under them scrolls.
 							<div
-								style={
-									laneView
-										? {display: 'flex', flexDirection: 'column', height: '100%'}
-										: undefined
-								}
+								style={{
+									display: 'flex',
+									flexDirection: 'column',
+									height: '100%',
+								}}
 							>
 								<FormHeader>
 									<div
@@ -1138,24 +1151,35 @@ export const IssueDetails = ({
 											onChange={onChangeTab}
 											showCounts={panelWidth >= TAB_COUNTS_WIDTH}
 										/>
-										{(
-											[
-												['overview', overviewPane],
-												['comments', commentsPane],
-												['code', commitsPane],
-												['stats', statsPane],
-											] as const
-										)
-											.filter(([tab]) => visitedTabs.includes(tab))
-											.map(([tab, pane]) => (
-												<div
-													key={tab}
-													data-testid={`tab-pane-${tab}`}
-													hidden={tab !== activeTab}
-												>
-													{pane}
-												</div>
-											))}
+										<div
+											data-testid="tab-scroll"
+											style={{
+												flex: 1,
+												minHeight: 0,
+												overflowY: 'auto',
+												// The scrollbar in the panel's padding, clear of the cards.
+												...scrollGutter(ASIDE_PADDING),
+											}}
+										>
+											{(
+												[
+													['overview', overviewPane],
+													['comments', commentsPane],
+													['code', commitsPane],
+													['stats', statsPane],
+												] as const
+											)
+												.filter(([tab]) => visitedTabs.includes(tab))
+												.map(([tab, pane]) => (
+													<div
+														key={tab}
+														data-testid={`tab-pane-${tab}`}
+														hidden={tab !== activeTab}
+													>
+														{pane}
+													</div>
+												))}
+										</div>
 									</>
 								)}
 							</div>

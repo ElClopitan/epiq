@@ -5,7 +5,6 @@ import {
 	getUserSetupStatus,
 	isRepositoryInitialized,
 } from '../config/setup-utils.js';
-import {CLOSED_SWIMLANE_ID} from '../board/static-ids.js';
 import {AppState} from '../model/app-state.model.js';
 import {
 	AnyContext,
@@ -25,7 +24,12 @@ import {
 	ticketTagsFromBreadCrumb,
 } from '../utils/ticket.utils.js';
 import {CmdKeyword, CmdKeywords} from './cmd-keywords.js';
-import {boardGoals, getTicketGoal, projectGoals} from '../utils/goal.utils.js';
+import {
+	boardGoals,
+	getTicketGoal,
+	goalsOpenFirst,
+	isTicketClosed,
+} from '../utils/goal.utils.js';
 import {generatePeekOffsetHints} from './validate-date.js';
 import {laneRules, rulesLacking} from '../utils/lane-rules.js';
 
@@ -124,6 +128,7 @@ const GLOBAL_COMMANDS = [
 	CmdKeywords.HELP,
 	CmdKeywords.EXPORT,
 	CmdKeywords.CONFIG,
+	CmdKeywords.SETUP,
 	CmdKeywords.YANK,
 ];
 
@@ -208,12 +213,9 @@ export const goalNamesInScope = (): string[] => {
 	const shown = board ? boardGoals(board.id) : [];
 	return [
 		...shown,
-		...projectGoals().filter(goal => !shown.includes(goal)),
+		...goalsOpenFirst().filter(goal => !shown.includes(goal)),
 	].map(goal => goal.name);
 };
-
-const isTicketClosed = (ticket: Ticket): boolean =>
-	ticket.parentNodeId === CLOSED_SWIMLANE_ID;
 
 // `description` is offered whenever a ticket is in scope, even from a descendant node.
 const getEditModifiersInScope = ({
@@ -274,7 +276,13 @@ const getAvailableBaseCommands = ({
 	}
 
 	if (!isRepositoryInitialized()) {
-		return [CmdKeywords.HELP, CmdKeywords.INIT, CmdKeywords.OPEN];
+		return [
+			CmdKeywords.HELP,
+			CmdKeywords.INIT,
+			CmdKeywords.OPEN,
+			CmdKeywords.SETUP,
+			CmdKeywords.EXIT,
+		];
 	}
 
 	if (readOnly) {
@@ -285,6 +293,7 @@ const getAvailableBaseCommands = ({
 			CmdKeywords.EXPORT,
 			CmdKeywords.CONFIG,
 			CmdKeywords.YANK,
+			CmdKeywords.EXIT,
 		];
 	}
 
@@ -382,6 +391,7 @@ export const getCmdModifiers = (
 		[CmdKeywords.EXPORT]: [],
 		[CmdKeywords.SYNC]: [],
 		[CmdKeywords.INIT]: [],
+		[CmdKeywords.SETUP]: [],
 		// Reads the registry, so only when this is the command being completed.
 		[CmdKeywords.OPEN]:
 			keyword === CmdKeywords.OPEN ? getOpenProjectModifiers() : [],

@@ -40,10 +40,21 @@ export const DIFF_BOX_STYLE: React.CSSProperties = {
 	overflow: 'clip',
 };
 
+// Half the library's tint, so a changed line keeps its syntax colours. The
+// override is what the line mixes 20% of in, so a 50% blend halves it. Inside
+// the shadow root, where the library's own variables resolve.
+const DIFF_LINE_CSS = ['addition', 'deletion']
+	.map(
+		kind =>
+			`[data-line-type='change-${kind}'] { --diffs-bg-${kind}-override: color-mix(in lab, var(--diffs-bg) 50%, var(--diffs-${kind}-base)); }`,
+	)
+	.join('\n');
+
 const FileDiffViewInner = <LAnnotation = undefined,>({
 	file,
 	diffStyle,
 	selectedLines,
+	onSelectionChange,
 	onSelectionEnd,
 	lineAnnotations,
 	renderAnnotation,
@@ -53,6 +64,8 @@ const FileDiffViewInner = <LAnnotation = undefined,>({
 	diffStyle: 'split' | 'unified';
 	// Undefined leaves line selection off.
 	selectedLines?: SelectedLineRange | null;
+	// Each step of a drag, so the range shows while it is chosen.
+	onSelectionChange?: (range: SelectedLineRange | null) => void;
 	onSelectionEnd?: (range: SelectedLineRange | null) => void;
 	lineAnnotations?: DiffLineAnnotation<LAnnotation>[];
 	renderAnnotation?: (
@@ -80,6 +93,7 @@ const FileDiffViewInner = <LAnnotation = undefined,>({
 					theme: PIERRE_THEME,
 					enableLineSelection: onSelectionEnd !== undefined,
 					controlledSelection: onSelectionEnd !== undefined,
+					onLineSelectionChange: onSelectionChange,
 					onLineSelectionEnd: onSelectionEnd,
 					// Shows lines are selectable before anyone tries dragging.
 					lineHoverHighlight:
@@ -87,6 +101,7 @@ const FileDiffViewInner = <LAnnotation = undefined,>({
 					// Keeps a file's name pinned while any of its diff is on screen.
 					stickyHeader: true,
 					overflow: wrap ? 'wrap' : 'scroll',
+					unsafeCSS: DIFF_LINE_CSS,
 				}}
 				selectedLines={selectedLines}
 				lineAnnotations={lineAnnotations}

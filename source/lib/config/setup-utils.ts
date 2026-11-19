@@ -1,4 +1,6 @@
+import {getSetupSession} from '../state/setup-session.state.js';
 import {isValidEmail} from '../model/email-link.js';
+import {isValidUserName} from './actor-env.js';
 import {isFail, isSuccess} from '../model/result-types.js';
 import {
 	readProjectFile,
@@ -8,10 +10,12 @@ import {getSettingsState} from '../state/settings.state.js';
 import {claimedEmailsOf} from '../state/email-claims.state.js';
 import {getOfferedEmails} from '../state/email-offers.state.js';
 import {resolveClosestEpiqProjectRoot} from '../storage/paths.js';
+import type {MachineStep} from '../state/setup-session.state.js';
 
 export const getUserSetupStatus = (): {
 	isSetupDone: boolean;
-	isSetPreferredEditor: boolean;
+	/** The machine's own questions, whatever the board here still asks. */
+	isMachineSetupDone: boolean;
 	isSetUserName: boolean;
 	isSetAutoSync: boolean;
 	isSetEmails: boolean;
@@ -19,12 +23,10 @@ export const getUserSetupStatus = (): {
 	/** So the screen can tell "claimed nothing" from "refused". */
 	emailSetupDeclined: boolean;
 	userName: string | null;
-	preferredEditor: string | null;
 	autoSync: boolean | null;
 } => {
 	const settings = getSettingsState();
 	const isSetUserName = Boolean(settings.userName?.trim());
-	const isSetPreferredEditor = Boolean(settings.preferredEditor?.trim());
 	const isSetAutoSync =
 		settings.autoSync === true || settings.autoSync === false;
 
@@ -39,12 +41,10 @@ export const getUserSetupStatus = (): {
 	const isSetEmails = claimedEmails.length > 0 || declined || boardId === null;
 
 	return {
-		isSetupDone:
-			isSetPreferredEditor && isSetUserName && isSetAutoSync && isSetEmails,
-		isSetPreferredEditor,
+		isSetupDone: isSetUserName && isSetAutoSync && isSetEmails,
+		isMachineSetupDone: isSetUserName && isSetAutoSync,
 		isSetUserName,
 		userName: settings.userName,
-		preferredEditor: settings.preferredEditor,
 		autoSync: settings.autoSync === undefined ? null : settings.autoSync,
 		isSetAutoSync: isSetAutoSync,
 		isSetEmails,
@@ -115,15 +115,21 @@ export const yesNoToBoolean = (
 
 /**
  * The setup command to open next, so answering one step opens the next; null
- * once setup is done, when `:config` is an ordinary command again.
+ * once setup is done, when `:config` is an ordinary command again. Never `init`:
+ * setup is this machine's, a project is the repository's.
  */
 export const nextSetupCommand = (): string | null => {
 	const status = getUserSetupStatus();
 
-	if (!status.isSetUserName) return 'config username ';
-	if (!status.isSetPreferredEditor) return 'config editor ';
-	if (!status.isSetAutoSync) return 'config autoSync ';
-	if (!isRepositoryInitialized()) return 'init';
+	// Proposed from git, so enter is enough; the line shows it to change first.
+	if (!status.isSetUserName) {
+		const {gitName} = getSettingsState();
+		return `config username ${
+			gitName && isValidUserName(gitName) ? gitName.trim() : ''
+		}`;
+	}
+	// On by default: enter keeps the board current without a manual sync.
+	if (!status.isSetAutoSync) return 'config autoSync on';
 
 	// Seeded with the first scanned address, else git's `user.email`, since the
 	// scan may not have run yet.
@@ -138,4 +144,26 @@ export const nextSetupCommand = (): string | null => {
 	}
 
 	return null;
+};
+
+/** A machine step's command, holding the current answer, for a rerun to confirm or change. */
+export const machineStepCommand = (step: MachineStep): string => {
+	const {userName, autoSync} = getSettingsState();
+
+	switch (step) {
+		case 'username':
+			return `config username ${userName ?? ''}`;
+		case 'autoSync':
+			return `config autoSync ${booleanToYesNo(autoSync) ?? ''}`;
+	}
+};
+
+/** `epiq setup` has nothing left to ask: its success screen shows. */
+export const isSetupFinished = (): boolean => {
+	const {quitWhenDone, rerunStep} = getSetupSession();
+	return (
+		Boolean(quitWhenDone) &&
+		!rerunStep &&
+		getUserSetupStatus().isMachineSetupDone
+	);
 };

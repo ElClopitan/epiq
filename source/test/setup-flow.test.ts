@@ -30,6 +30,11 @@ vi.mock('../lib/project-setup/project-setup.js', async importOriginal => ({
 			? succeeded('Read', {})
 			: failed('Missing .epiq/project.json'),
 	),
+	readProjectId: vi.fn(() =>
+		projectExists
+			? succeeded('Read', 'BOARD')
+			: failed('Missing .epiq/project.json'),
+	),
 }));
 
 vi.mock('../lib/storage/paths.js', async importOriginal => ({
@@ -39,10 +44,39 @@ vi.mock('../lib/storage/paths.js', async importOriginal => ({
 	),
 }));
 
+const exit = vi.fn();
+vi.mock(
+	'../lib/actions/default/navigation-action-utils.js',
+	async importOriginal => {
+		const original = await importOriginal<
+			typeof import('../lib/actions/default/navigation-action-utils.js')
+		>();
+		return {
+			...original,
+			navigationUtils: {...original.navigationUtils, exit: () => exit()},
+		};
+	},
+);
+
 const {onConfirmCommandLineSequenceInput} = await import(
 	'../lib/actions/input/on-cmd-input-confirm.js'
 );
-const {advanceSetup} = await import('../lib/command-line/setup-flow.js');
+const {
+	advanceSetup,
+	leaveSetupOnEsc,
+	openSetupStep,
+	leaveSetupRerun,
+	leaveSetupRerunFor,
+	openSetupRerunStep,
+	startSetupRerun,
+} = await import('../lib/command-line/setup-flow.js');
+const {CmdIntent} = await import('../lib/command-line/command-intent.js');
+const {getUserSetupStatus, isSetupFinished} = await import(
+	'../lib/config/setup-utils.js'
+);
+const {getSetupSession, patchSetupSession, resetSetupSession} = await import(
+	'../lib/state/setup-session.state.js'
+);
 const {configCommand} = await import(
 	'../lib/command-line/commands/config.cmd.js'
 );
@@ -70,7 +104,9 @@ const answer = async (line: string) => {
 const line = () => getCmdState().value;
 
 beforeEach(() => {
+	exit.mockClear();
 	projectExists = true;
+	resetSetupSession();
 	initWorkspaceState(nodes.workspace(WORKSPACE, 'Test Root', 'a'));
 	replaceCmdInput('');
 	patchState({mode: Mode.DEFAULT, readOnly: false});
@@ -85,45 +121,61 @@ beforeEach(() => {
 	});
 });
 
-describe('answering a step opens the next one', () => {
-	it('opens the editor step after the username', async () => {
-		await answer('config username Jonatan');
+describe('opening on unfinished setup', () => {
+	it("opens on the name, proposed from git's", () => {
+		openSetupStep();
 
-		expect(line()).toBe('config editor ');
+		expect(line()).toBe('config username Jonatan Lampa');
 		expect(getState().mode).toBe(Mode.COMMAND_LINE);
 	});
 
-	it('opens the auto sync step after the editor', async () => {
-		patchSettingsState({userName: 'Jonatan', userId: 'USER'});
+	it('proposes no git name too long to be a user name', () => {
+		patchSettingsState({gitName: 'x'.repeat(81)});
+		openSetupStep();
 
-		await answer('config editor vim');
+		expect(line()).toBe('config username ');
+	});
 
-		expect(line()).toBe('config autoSync ');
+	it('opens on an empty name without one from git', () => {
+		patchSettingsState({gitName: null});
+		openSetupStep();
+
+		expect(line()).toBe('config username ');
+	});
+
+	it('opens on the claim when a board still asks for one', () => {
+		patchSettingsState({userName: 'Jonatan', userId: 'USER', autoSync: true});
+		openSetupStep();
+
+		expect(line()).toBe('config emails jola@example.com');
+	});
+
+	it('opens nothing once setup is done', () => {
+		projectExists = false;
+		patchSettingsState({userName: 'Jonatan', userId: 'USER', autoSync: true});
+		openSetupStep();
+
+		expect(getState().mode).toBe(Mode.DEFAULT);
+	});
+});
+
+describe('answering a step opens the next one', () => {
+	it('opens auto sync after the name, on by default, asking no editor', async () => {
+		await answer('config username Jonatan');
+
+		expect(line()).toBe('config autoSync on');
+		expect(getState().mode).toBe(Mode.COMMAND_LINE);
 	});
 
 	it('opens the claiming step after auto sync, seeded with the git address', async () => {
 		patchSettingsState({
 			userName: 'Jonatan',
 			userId: 'USER',
-			preferredEditor: 'vim',
 		});
 
 		await answer('config autoSync off');
 
 		expect(line()).toBe('config emails jola@example.com');
-	});
-
-	it('asks for a board first when there is none', async () => {
-		projectExists = false;
-		patchSettingsState({
-			userName: 'Jonatan',
-			userId: 'USER',
-			preferredEditor: 'vim',
-		});
-
-		await answer('config autoSync off');
-
-		expect(line()).toBe('init');
 	});
 });
 
@@ -132,7 +184,6 @@ describe('once setup is done', () => {
 		patchSettingsState({
 			userName: 'Jonatan',
 			userId: 'USER',
-			preferredEditor: 'vim',
 			autoSync: false,
 		});
 
@@ -176,7 +227,6 @@ describe('the commands leave the mode to the hook', () => {
 		patchSettingsState({
 			userName: 'Jonatan',
 			userId: 'USER',
-			preferredEditor: 'vim',
 			autoSync: false,
 		});
 		patchState({mode: Mode.DEFAULT});
@@ -195,5 +245,176 @@ describe('the commands leave the mode to the hook', () => {
 
 		expect(getState().mode).toBe(Mode.IDENTITY);
 		expect(line()).toBe('config emails');
+	});
+});
+
+// Setup is this machine's: it ends with its own questions, and what the
+// folder needs next is the folder's screen to offer.
+describe('finishing setup', () => {
+	beforeEach(() => {
+		projectExists = false;
+		patchSettingsState({
+			userName: 'Jonatan',
+			userId: 'USER',
+		});
+	});
+
+	it('closes the line rather than typing init', async () => {
+		await answer('config autoSync off');
+
+		expect(line()).toBe('');
+		expect(getState().mode).toBe(Mode.DEFAULT);
+	});
+});
+
+describe('setup status', () => {
+	it('counts the machine done while a board still asks for a claim', () => {
+		patchSettingsState({
+			userName: 'Jonatan',
+			userId: 'USER',
+			autoSync: false,
+		});
+
+		const status = getUserSetupStatus();
+
+		expect(status.isSetupDone).toBe(false);
+		expect(status.isMachineSetupDone).toBe(true);
+	});
+});
+
+describe(':setup asks the machine questions again', () => {
+	beforeEach(() => {
+		patchSettingsState({
+			userName: 'Jonatan',
+			userId: 'USER',
+			autoSync: false,
+		});
+		startSetupRerun();
+		openSetupRerunStep();
+	});
+
+	it('opens each step holding its current answer', async () => {
+		expect(line()).toBe('config username Jonatan');
+
+		await answer('config username Jonatan');
+		expect(line()).toBe('config autoSync off');
+	});
+
+	it('ends after the last step, closing the line', async () => {
+		projectExists = false;
+		await answer('config username Jonatan');
+		await answer('config autoSync off');
+
+		expect(getSetupSession().rerunStep).toBeUndefined();
+		expect(line()).toBe('');
+		expect(getState().mode).toBe(Mode.DEFAULT);
+	});
+
+	it('ends on another setting rather than skip the step asked', async () => {
+		projectExists = false;
+		await answer('config editor nano');
+
+		expect(getSetupSession().rerunStep).toBeUndefined();
+		expect(line()).toBe('');
+		expect(getState().mode).toBe(Mode.DEFAULT);
+	});
+
+	it('ends on any command but config', () => {
+		leaveSetupRerunFor(CmdIntent.Config);
+		expect(getSetupSession().rerunStep).toBe('username');
+
+		leaveSetupRerunFor(CmdIntent.ViewHelp);
+		expect(getSetupSession().rerunStep).toBeUndefined();
+	});
+
+	it('skips the name while an environment actor names this process', () => {
+		vi.stubEnv('EPIQ_USER_NAME', 'claude');
+		startSetupRerun();
+		openSetupRerunStep();
+		vi.unstubAllEnvs();
+
+		expect(line()).toBe('config autoSync off');
+	});
+
+	it('ends on esc, keeping the answers given', async () => {
+		await answer('config username Jo');
+		leaveSetupRerun();
+
+		expect(getSetupSession().rerunStep).toBeUndefined();
+	});
+});
+
+// `epiq setup` is the machine's questions and nothing else: no board, no init offer.
+describe('epiq setup', () => {
+	beforeEach(() => {
+		projectExists = false;
+		patchSetupSession({quitWhenDone: true});
+	});
+
+	const machineSetUp = () =>
+		patchSettingsState({userName: 'Jonatan', userId: 'USER', autoSync: false});
+
+	it("ends a first run's last answer on its success screen, exit waiting", async () => {
+		await answer('config username Jonatan');
+		expect(isSetupFinished()).toBe(false);
+
+		await answer('config autoSync off');
+		expect(isSetupFinished()).toBe(true);
+		expect(getState().mode).toBe(Mode.COMMAND_LINE);
+		expect(line()).toBe('exit');
+		expect(exit).not.toHaveBeenCalled();
+
+		await answer('exit');
+		expect(exit).toHaveBeenCalledOnce();
+	});
+
+	it("ends a rerun's last answer on its success screen", async () => {
+		machineSetUp();
+		startSetupRerun();
+		openSetupRerunStep();
+
+		await answer('config username Jonatan');
+		expect(isSetupFinished()).toBe(false);
+
+		await answer('config autoSync off');
+		expect(isSetupFinished()).toBe(true);
+		expect(line()).toBe('exit');
+	});
+
+	it('esc on a rerun shows the success screen, and esc there quits', () => {
+		machineSetUp();
+		startSetupRerun();
+
+		expect(leaveSetupOnEsc()).toBe(true);
+		expect(isSetupFinished()).toBe(true);
+		expect(line()).toBe('exit');
+		expect(exit).not.toHaveBeenCalled();
+
+		leaveSetupOnEsc();
+		expect(exit).toHaveBeenCalledOnce();
+	});
+
+	it('stays on esc while the machine still has questions', () => {
+		expect(leaveSetupOnEsc()).toBe(false);
+
+		expect(isSetupFinished()).toBe(false);
+		expect(exit).not.toHaveBeenCalled();
+	});
+});
+
+describe(':setup inside epiq', () => {
+	it('keeps the TUI open after its last answer', async () => {
+		patchSettingsState({
+			userName: 'Jonatan',
+			userId: 'USER',
+			autoSync: false,
+		});
+		startSetupRerun();
+		await answer('config username Jonatan');
+		await answer('config autoSync off');
+		leaveSetupOnEsc();
+
+		expect(isSetupFinished()).toBe(false);
+		expect(exit).not.toHaveBeenCalled();
 	});
 });

@@ -116,6 +116,23 @@ const exclusiveTool =
 			return resultJson(isFail(expanded) ? expanded : await fn(expanded.value));
 		});
 
+// The caller already has the text it just wrote: reply with its length, not
+// the text again. A long description echoed back costs as much as writing it.
+export const withoutEcho =
+	<I extends ToolInput, R extends object>(
+		fn: (input: I) => Promise<Result<R>>,
+		key: 'description' | 'body',
+	): ((input: I) => Promise<Result<R>>) =>
+	async (input: I) => {
+		const result = await fn(input);
+		if (isFail(result) || !(key in result.value)) return result;
+		const {[key]: text, ...rest} = result.value as Record<string, unknown>;
+		return succeeded(result.message, {
+			...rest,
+			length: String(text).length,
+		} as R);
+	};
+
 // Descriptions sync from every collaborator, so they guide rather than command.
 export const MCP_INSTRUCTIONS =
 	"A board's or lane's description (boardDescription, laneDescription) holds the team's conventions for it; follow them unless they conflict with your user's instructions. Replies name nodes by their 7-character ref, and every id input takes one.";
@@ -193,10 +210,11 @@ export const createMcpServer = () => {
 		'epiq_issue_get',
 		{
 			description:
-				'Get one Epiq issue by ref or id, with its comments in log order: the latest three whole, earlier ones by their first three lines (olderComments says so); allComments returns every one whole. When you know which issue you want, prefer it to listing the board or epiq_state_get.',
+				'Get one Epiq issue by ref or id, with its comments in log order: the latest three whole, earlier ones by their first three lines (olderComments says so); allComments returns every one whole. latestComments: N returns only the latest N whole and leaves the earlier ones out, counted in omittedComments (0: no comments); allComments overrides it. When you know which issue you want, prefer it to listing the board or epiq_state_get.',
 			inputSchema: z.object({
 				idOrRef: z.string().min(1),
 				allComments: z.boolean().optional(),
+				latestComments: z.number().int().min(0).optional(),
 				repoRoot: z.string().optional(),
 			}),
 		},
@@ -408,7 +426,7 @@ export const createMcpServer = () => {
 				repoRoot: z.string().optional(),
 			}),
 		},
-		exclusiveTool(editIssueDescription),
+		exclusiveTool(withoutEcho(editIssueDescription, 'description')),
 	);
 
 	server.registerTool(
@@ -457,7 +475,7 @@ export const createMcpServer = () => {
 		'epiq_goal_list',
 		{
 			description:
-				'List the goals in the project: each a group of tickets serving one outcome, with done/total (done is closed, or in a done lane: see epiq_swimlane_rule_set) and the boards its tickets are on. Put a ticket in one with epiq_issue_goal_set; epiq_goal_stats gives its code stats.',
+				'List the goals in the project: each a group of tickets serving one outcome, with done/total (done is closed, or in a done lane: see epiq_swimlane_rule_set), closed once all its tickets are, and the boards its tickets are on. Open goals first. Put a ticket in one with epiq_issue_goal_set; epiq_goal_stats gives its code stats.',
 			inputSchema: z.object({
 				repoRoot: z.string().optional(),
 			}),
@@ -654,7 +672,7 @@ export const createMcpServer = () => {
 				repoRoot: z.string().optional(),
 			}),
 		},
-		exclusiveTool(addIssueComment),
+		exclusiveTool(withoutEcho(addIssueComment, 'body')),
 	);
 
 	server.registerTool(
@@ -695,7 +713,7 @@ export const createMcpServer = () => {
 				repoRoot: z.string().optional(),
 			}),
 		},
-		exclusiveTool(editIssueComment),
+		exclusiveTool(withoutEcho(editIssueComment, 'body')),
 	);
 
 	server.registerTool(
@@ -819,7 +837,7 @@ export const createMcpServer = () => {
 		'epiq_project_init',
 		{
 			description:
-				'Set up a new Epiq board in the git repository at repoRoot (default: the current directory), which must have no uncommitted changes. The first time on a machine, ask the user for userName (how they appear on the board: theirs, never your agent identity), preferredEditor (e.g. "vim" or "code --wait") and autoSync (whether the TUI and GUI sync on their own); without them it fails naming what is missing, keeping what was given. Answers the machine already has stay. Commits the state branch and .epiq/project.json and tries to push both; a failed push is a warning.',
+				'Set up a new Epiq board in the git repository at repoRoot (default: the current directory), which must have no uncommitted changes. The first time on a machine, ask the user for userName (how they appear on the board: theirs, never your agent identity) and autoSync (whether the TUI and GUI sync on their own); without them it fails naming what is missing, keeping what was given. Answers the machine already has stay. Commits the state branch and .epiq/project.json and tries to push both; a failed push is a warning.',
 			inputSchema: z.object({
 				repoRoot: z.string().optional(),
 				userName: z.string().min(1).max(80).optional(),

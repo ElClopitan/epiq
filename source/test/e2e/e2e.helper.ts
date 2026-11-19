@@ -18,6 +18,12 @@ export const ARROW_LEFT = '\x1B\x5B\x44';
 export const SHIFT_ARROW_DOWN = '\x1B\x5B\x31\x3B\x32\x42';
 export const SHIFT_ARROW_UP = '\x1B\x5B\x31\x3B\x32\x41';
 
+// A frame opens with synchronized output; a full clear is `2J` or Ink's
+// home-and-erase-down.
+const SYNC_START = '\x1B[?2026h';
+const FRAME_OR_CLEAR = /\x1B\[\?2026h|\x1B\[2J|\x1B\[1;1H\x1B\[0?J/g;
+const LONGEST_SEQUENCE = 10;
+
 const MOVE_CURSOR_HOME = '\x1B[H';
 const CLEAR_SCREEN = '\x1B[2J';
 const HIDE_CURSOR = '\x1B[?25l';
@@ -43,12 +49,18 @@ export type TuiSession = {
 	cwd: string;
 	input: (...values: string[]) => void;
 	output: () => string;
+	/** The screen once every byte written so far has been drawn, even after exit. */
+	screen: () => Promise<string>;
 	waitFor: (
 		text: string | RegExp | ((output: string) => boolean),
 		timeoutMs?: number,
 	) => Promise<string>;
 	clear: () => void;
+	/** The raw bytes the TUI wrote since the last call; the first call starts recording. */
+	takeWritten: () => string;
 	destroy: () => Promise<void>;
+	/** Settles when the TUI's process ends. */
+	exited: Promise<void>;
 	pid: number;
 };
 
@@ -212,6 +224,11 @@ export const setupTui = (
 	let renderedOutput = '';
 	let pendingWrites: Promise<void> = Promise.resolve();
 	let lastDataAt = Date.now();
+	let written: string | null = null;
+	// Every frame after the first is a diff; a clear there is a tear.
+	let framesSeen = 0;
+	let clearsAfterFirstFrame = 0;
+	let carry = '';
 
 	const terminal = new Terminal({
 		cols: width,
@@ -254,6 +271,16 @@ export const setupTui = (
 
 	child.onData(data => {
 		lastDataAt = Date.now();
+		if (written !== null) written += data;
+
+		// The carry catches a sequence split across chunks; skip what it held.
+		const scanned = carry + data;
+		for (const match of scanned.matchAll(FRAME_OR_CLEAR)) {
+			if (match.index + match[0].length <= carry.length) continue;
+			if (match[0] === SYNC_START) framesSeen++;
+			else if (framesSeen > 1) clearsAfterFirstFrame++;
+		}
+		carry = scanned.slice(-(LONGEST_SEQUENCE - 1));
 		pendingWrites = pendingWrites.then(
 			() =>
 				new Promise<void>(resolve => {
@@ -329,7 +356,17 @@ export const setupTui = (
 		},
 
 		output: getOutput,
+		screen: async () => {
+			await flushOutput();
+			return getOutput();
+		},
 		clear: clearOutput,
+
+		takeWritten: () => {
+			const taken = written ?? '';
+			written = '';
+			return taken;
+		},
 
 		waitFor: async (text, timeoutMs = 3_000) => {
 			const deadline = timeoutMs * TIMEOUT_SCALE;
@@ -343,6 +380,12 @@ export const setupTui = (
 
 			while (Date.now() - startedAt < deadline) {
 				await flushOutput();
+
+				if (clearsAfterFirstFrame > 0) {
+					throw new Error(
+						`The TUI cleared the whole screen after its first frame, which tears.\nLast rendered frame:\n${getOutput()}`,
+					);
+				}
 
 				if (matches(getOutput())) {
 					await settle();
@@ -365,6 +408,7 @@ export const setupTui = (
 		},
 
 		destroy,
+		exited,
 		pid: child.pid,
 	};
 };

@@ -1,5 +1,7 @@
 import type {Page} from '@playwright/test';
+import {clickEmptyBoard} from './live-board.js';
 import {expect, test} from './fixtures.js';
+import {addTicket} from './ticket.js';
 
 const addLane = async (page: Page, name: string) => {
 	await page.getByTestId('add-swimlane').click();
@@ -93,7 +95,7 @@ test('a half-written lane description keeps the panel open past a stray click', 
 	await page.getByTestId('swimlane-description-edit').click();
 	await page.getByTestId('swimlane-description-input').fill('Half written');
 
-	await page.getByRole('main').click({position: {x: 40, y: 40}});
+	await clickEmptyBoard(page);
 	await expect(page.getByTestId('swimlane-description-input')).toHaveValue(
 		'Half written',
 	);
@@ -182,5 +184,33 @@ test("the switcher stays open while one board's details give way to another's", 
 	).toHaveAttribute('aria-pressed', 'false');
 
 	await page.keyboard.press('Escape');
+	expect(pageErrors).toEqual([]);
+});
+
+// Without its own renderers a table is the browser's: no borders, centred heads.
+test('a markdown table in a description draws its cells', async ({
+	page,
+	appUrl,
+	pageErrors,
+}) => {
+	await page.goto(appUrl);
+	await expect(page.getByTestId('board-switcher')).toContainText('Default');
+	await addTicket(page, `Tabled ${Date.now()}`);
+
+	const aside = page.locator('aside');
+	await aside.getByTestId('description-edit').click();
+	await aside
+		.getByTestId('description-input')
+		.fill('| Risk | Mitigation |\n|---|---|\n| Leak | Proxy |');
+	await aside.getByTestId('description-save').click();
+
+	const head = aside.locator('table th').first();
+	await expect(head).toHaveText('Risk');
+	await expect(head).toHaveCSS('text-align', 'left');
+	await expect(aside.locator('table td').first()).toHaveCSS(
+		'border-top-width',
+		'1px',
+	);
+
 	expect(pageErrors).toEqual([]);
 });

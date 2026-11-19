@@ -1,9 +1,28 @@
-// A goal's marks. On a card: its name in its colour, in the goal dropdown's
-// dark frame so it never reads as a tag, and its colour down the left edge.
-// Its progress is the same stroke laid flat.
+// A goal's marks: a short bar in its colour before its name, on a card as on
+// the strip, so the two read as one. Its progress is a stroke along the strip
+// pill's foot.
 
-import React from 'react';
+import React, {useState} from 'react';
 import {GUI_THEME} from '../lib/gui-theme';
+
+/** A short upright bar in the goal's colour. */
+export const GoalMark = ({color}: {color: string}) => (
+	<span
+		data-testid="goal-mark"
+		aria-hidden
+		style={{
+			width: 3,
+			height: 11,
+			borderRadius: 1.5,
+			background: color,
+			flexShrink: 0,
+		}}
+	/>
+);
+
+/** What pressing a goal's filter does, on a pill or a card. */
+export const goalFilterTitle = (narrowed: boolean): string =>
+	narrowed ? 'Show every ticket again' : 'Show only this goal';
 
 export const GoalLabel = ({
 	color,
@@ -24,6 +43,10 @@ export const GoalLabel = ({
 	onPress?: () => void;
 	pressTitle?: string;
 }) => {
+	// Pressable, it lifts under the pointer as a chip does.
+	const [hovered, setHovered] = useState(false);
+	const lifted = hovered && onPress !== undefined;
+
 	const style: React.CSSProperties = {
 		maxWidth: '45%',
 		flexShrink: 0,
@@ -33,26 +56,34 @@ export const GoalLabel = ({
 		fontSize: 11,
 		display: 'inline-flex',
 		alignItems: 'center',
+		gap: 5,
 		boxSizing: 'border-box',
 		minWidth: 0,
 		lineHeight: 1,
 		fontFamily: 'inherit',
-		// Its colour carries the name, so a lane's goals tell apart at a glance.
-		color,
-		background: GUI_THEME.well,
-		// Held on, the frame takes the goal's colour.
-		border: `1px solid ${pressed ? color : GUI_THEME.line}`,
+		color: GUI_THEME.secondary,
+		background: lifted
+			? `linear-gradient(${GUI_THEME.hover}, ${GUI_THEME.hover}), ${GUI_THEME.well}`
+			: GUI_THEME.well,
+		// Held on, the whole frame takes the goal's colour.
+		border: `1px solid ${
+			pressed ? color : lifted ? GUI_THEME.secondary : GUI_THEME.line
+		}`,
+		transition: 'background 120ms ease, border-color 120ms ease',
 	};
 	const content = (
-		<span
-			style={{
-				overflow: 'hidden',
-				textOverflow: 'ellipsis',
-				whiteSpace: 'nowrap',
-			}}
-		>
-			{label}
-		</span>
+		<>
+			<GoalMark color={color} />
+			<span
+				style={{
+					overflow: 'hidden',
+					textOverflow: 'ellipsis',
+					whiteSpace: 'nowrap',
+				}}
+			>
+				{label}
+			</span>
+		</>
 	);
 
 	if (!onPress) {
@@ -69,6 +100,8 @@ export const GoalLabel = ({
 			data-testid={testId}
 			aria-pressed={pressed}
 			title={pressTitle ?? label}
+			onMouseEnter={() => setHovered(true)}
+			onMouseLeave={() => setHovered(false)}
 			// Stopped here, or a click on a card would also select it.
 			onClick={event => {
 				event.stopPropagation();
@@ -80,24 +113,6 @@ export const GoalLabel = ({
 		</button>
 	);
 };
-
-// A straight bar inside the card's left edge, clear of its rounded corners.
-export const GoalStripe = ({color, inset}: {color: string; inset: number}) => (
-	<span
-		data-testid="ticket-goal-stripe"
-		aria-hidden
-		style={{
-			position: 'absolute',
-			left: 4,
-			top: inset,
-			bottom: inset,
-			width: 2,
-			borderRadius: 1,
-			background: color,
-			pointerEvents: 'none',
-		}}
-	/>
-);
 
 // How far along a goal is: its colour over a faint track, so a short stroke
 // reads as a share of the whole.

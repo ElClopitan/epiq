@@ -4,6 +4,9 @@ import {theme} from '../theme/themes.js';
 import {truncateToWidth} from '../utils/string.utils.js';
 import {getUserSetupStatus} from '../config/setup-utils.js';
 import {EmailCandidates} from './EmailCandidates.js';
+import {useSetupSession} from '../state/setup-session.state.js';
+import {useAppState} from '../state/state.js';
+import {Mode} from '../model/action-map.model.js';
 
 type Props = {
 	width: number;
@@ -14,9 +17,7 @@ type StepRowProps = {
 	isDone: boolean;
 	command: string;
 	value?: string;
-	/** How to reach the step: typed for the first, already in the line after. */
 	verb?: string;
-	hint?: React.ReactNode;
 };
 
 const StepRow: React.FC<StepRowProps> = ({
@@ -24,7 +25,6 @@ const StepRow: React.FC<StepRowProps> = ({
 	command,
 	value,
 	verb = 'Type',
-	hint,
 }) => {
 	return (
 		<Box>
@@ -43,7 +43,6 @@ const StepRow: React.FC<StepRowProps> = ({
 					</Text>
 				</>
 			)}
-			{hint}
 		</Box>
 	);
 };
@@ -68,37 +67,33 @@ const formatValue = (value: unknown) => {
 
 export default function SettingsUI({width, height}: Props) {
 	const {
-		isSetPreferredEditor,
 		isSetUserName,
 		userName,
-		preferredEditor,
 		autoSync,
 		isSetAutoSync,
 		isSetEmails,
 		claimedEmails,
 		emailSetupDeclined,
 	} = getUserSetupStatus();
+	const {rerunStep} = useSetupSession();
+	// Esc closes the line a step opened; the step then says what to type.
+	const lineOpen = useAppState().mode === Mode.COMMAND_LINE;
 	const steps = [
 		{
 			key: 'username',
 			done: isSetUserName,
 			command: ':config username',
 			value: userName,
-			message: 'First, choose your username.',
+			message:
+				'First, the name others see on the board. Enter keeps it, or change it first.',
 		},
 		{
-			key: 'editor',
-			done: isSetPreferredEditor,
-			command: ':config editor',
-			value: preferredEditor,
-			message: 'Nice. Now pick your editor.',
-		},
-		{
-			key: 'autosync',
+			key: 'autoSync',
 			done: isSetAutoSync,
 			command: ':config autosync',
 			value: autoSync,
-			message: 'Almost there. Configure auto sync.',
+			message:
+				'Auto sync keeps the board current with your team. Enter keeps it on.',
 		},
 		{
 			key: 'emails',
@@ -111,11 +106,14 @@ export default function SettingsUI({width, height}: Props) {
 			// Last, because it is the only step that needs the board: it offers the
 			// addresses this repository's own history contains.
 			message:
-				'Last one. Claim the git addresses whose commits are yours, so the board calls them by your name.',
+				'Last one. Claim the git addresses whose commits are yours, so the board calls them by your Epiq name.',
 		},
 	];
 
-	const activeStepIndex = steps.findIndex(step => !step.done);
+	// A rerun walks every machine step, answered or not.
+	const activeStepIndex = rerunStep
+		? steps.findIndex(step => step.key === rerunStep)
+		: steps.findIndex(step => !step.done);
 	const activeStep =
 		activeStepIndex === -1 ? undefined : steps[activeStepIndex];
 	return (
@@ -130,16 +128,18 @@ export default function SettingsUI({width, height}: Props) {
 			rowGap={1}
 		>
 			<Text color={theme.accent} bold>
-				Welcome! 🔹
+				{rerunStep ? 'Setup' : 'Welcome! 🔹'}
 			</Text>
 
-			<Text>Let's get you started - it's a breeze.</Text>
-			<Text color={theme.secondary2}>
-				Remember - you can always search available commands by typing:
-				<Text color={theme.accent}> ? </Text>
+			<Text>
+				{rerunStep
+					? 'Confirm each answer with enter, or change it first. Esc leaves setup.'
+					: "Let's get you started - it's a breeze."}
 			</Text>
-
-			{activeStep && <Text color={theme.secondary2}>{activeStep.message}</Text>}
+			{/* A rerun's header already says what to do. */}
+			{activeStep && !rerunStep && (
+				<Text color={theme.secondary2}>{activeStep.message}</Text>
+			)}
 
 			<Box flexDirection="column">
 				{steps.map((step, index) => {
@@ -148,30 +148,15 @@ export default function SettingsUI({width, height}: Props) {
 					if (!shouldShow) return null;
 
 					const isActive = index === activeStepIndex;
-
-					// Only the first step is typed from scratch, so only it shows the shortcut.
-					const isFirstAsk = isActive && activeStepIndex === 0;
+					const isDone = rerunStep ? index < activeStepIndex : step.done;
 
 					return (
 						<Box key={step.key} flexDirection="column" marginBottom={1}>
 							<StepRow
-								isDone={step.done}
-								command={isFirstAsk ? ':config us' : step.command}
-								value={step.done ? formatValue(step.value) : undefined}
-								verb={isActive && !isFirstAsk ? 'Waiting:' : 'Type'}
-								hint={
-									isFirstAsk ? (
-										<Text color={theme.secondary2}>
-											{' then '}
-											<Text color={theme.accent}>tab</Text>
-											{' to auto-complete '}
-											{/* The chip the command becomes, taken from the step. */}
-											<Text backgroundColor={theme.secondary}>
-												{` ${step.command.split(' ').pop()} `}
-											</Text>
-										</Text>
-									) : undefined
-								}
+								isDone={isDone}
+								command={step.command}
+								value={isDone ? formatValue(step.value) : undefined}
+								verb={isActive && lineOpen ? 'Waiting:' : 'Type'}
 							/>
 							{/* The repository's addresses, so the step's numbers mean something. */}
 							{step.key === 'emails' && !step.done && <EmailCandidates />}
@@ -179,6 +164,31 @@ export default function SettingsUI({width, height}: Props) {
 					);
 				})}
 			</Box>
+		</Box>
+	);
+}
+
+/** `epiq setup`'s last screen: what to run next, and `exit` waiting on the line. */
+export function SetupDoneUI({width, height}: Props) {
+	return (
+		<Box
+			height={height - 4}
+			flexDirection="column"
+			width={width}
+			paddingTop={1}
+			paddingLeft={2}
+			borderStyle="round"
+			borderColor={theme.secondary}
+			rowGap={1}
+		>
+			<Text color={theme.accent} bold>
+				✔ You're all set.
+			</Text>
+			<Text>
+				Run <Text color={theme.accent}>epiq</Text> in a repository, or{' '}
+				<Text color={theme.accent}>epiq gui</Text> to fire up in a browser.
+			</Text>
+			<Text color={theme.secondary2}>Press enter to exit.</Text>
 		</Box>
 	);
 }

@@ -47,14 +47,18 @@ test.beforeEach(async ({page, appUrl}) => {
 	await expect(page.getByTestId('board-switcher')).toContainText('Default');
 });
 
-test('the menu opens a lane on its Overview, the chart on its Stats, and either again closes it', async ({
+test('the header opens a lane on its Overview, the panel switches to Stats, and the header again closes it', async ({
 	page,
 	pageErrors,
 }) => {
 	const name = `Tabs ${Date.now()}`;
 	await addLane(page, name);
 
-	await lane(page, name).getByTestId('swimlane-stats-open').click();
+	await lane(page, name).getByTestId('swimlane-handle').click();
+	await page
+		.locator('aside')
+		.getByRole('button', {name: 'Stats', exact: true})
+		.click();
 	await expect(page.getByText('Time in this lane')).toBeVisible();
 	await expect(page.getByTestId('swimlane-rule-done')).toHaveCount(0);
 
@@ -210,4 +214,65 @@ test('a readonly board opens its lanes read-only', async ({page}) => {
 
 	await page.getByTestId('swimlane-details-title').click();
 	await expect(page.getByTestId('swimlane-details-title-input')).toHaveCount(0);
+});
+
+// The board keeps room for a closed panel only: an open one takes that room
+// itself, so the columns still end at the board's right margin.
+test('with a lane panel open, the board scrolls to its last column and no further', async ({
+	page,
+	pageErrors,
+}) => {
+	await page
+		.locator('section')
+		.first()
+		.getByTestId('swimlane-details-open')
+		.click();
+	await expect(page.getByTestId('swimlane-details')).toBeVisible();
+
+	// As a string, like every other computed-style read in this suite.
+	const trailing = await page.evaluate<number>(`
+		(() => {
+			const last = document.querySelector('[data-testid="add-swimlane"]');
+			let scroller = last.parentElement;
+			while (scroller && getComputedStyle(scroller).overflowX !== 'auto' && getComputedStyle(scroller).overflowX !== 'scroll') {
+				scroller = scroller.parentElement;
+			}
+			const lastRight =
+				last.getBoundingClientRect().right -
+				scroller.getBoundingClientRect().left +
+				scroller.scrollLeft;
+			return scroller.scrollWidth - lastRight;
+		})()
+	`);
+
+	// The right margin alone, not a panel's width on top of it.
+	expect(trailing).toBeLessThan(100);
+
+	expect(pageErrors).toEqual([]);
+});
+
+test("a lane's header opens its panel and marks it selected; its add button opens neither", async ({
+	page,
+	pageErrors,
+}) => {
+	const name = `Header ${Date.now()}`;
+	await addLane(page, name);
+	const header = lane(page, name).getByTestId('swimlane-handle');
+
+	await lane(page, name).getByTestId('add-issue').click();
+	await expect(page.getByPlaceholder('ticket name')).toBeVisible();
+	await expect(page.getByTestId('swimlane-details')).toHaveCount(0);
+	await page.keyboard.press('Escape');
+	await expect(page.getByPlaceholder('ticket name')).toHaveCount(0);
+
+	await header.click();
+	await expect(page.getByTestId('swimlane-details-title')).toHaveText(name);
+	await expect(header).toHaveAttribute('aria-expanded', 'true');
+
+	await header.click();
+	await expect(page.getByTestId('swimlane-details')).toHaveCount(0);
+	await expect(header).toHaveAttribute('aria-expanded', 'false');
+
+	await remove(page, name);
+	expect(pageErrors).toEqual([]);
 });

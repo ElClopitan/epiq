@@ -26,6 +26,9 @@ export type PanelGlow = {
 	color: string;
 };
 
+// What a panel's glow defaults to.
+const PANEL_GLOW = {color: GUI_THEME.secondary, opacity: 0.25, radius: 200};
+
 export const PanelGlowContext = createContext<PanelGlow>({
 	x: 0,
 	y: 0,
@@ -69,9 +72,9 @@ export const Panel = <T extends ElementType = 'div'>({
 	children,
 	active = false,
 	borderColor = GUI_THEME.line,
-	glowColor = GUI_THEME.secondary,
-	glowOpacity = 0.25,
-	glowRadius = 200,
+	glowColor = PANEL_GLOW.color,
+	glowOpacity = PANEL_GLOW.opacity,
+	glowRadius = PANEL_GLOW.radius,
 	proximityReach,
 	borderRadius = 12,
 	style,

@@ -1,6 +1,6 @@
 import {Box} from 'ink';
 import React from 'react';
-import {getUserSetupStatus} from '../config/setup-utils.js';
+import {getUserSetupStatus, isSetupFinished} from '../config/setup-utils.js';
 import {Mode} from '../model/action-map.model.js';
 import {findInBreadCrumb} from '../model/app-state.model.js';
 import {isSuccess} from '../model/result-types.js';
@@ -10,12 +10,13 @@ import {ContextBar} from './ContextBar.js';
 import {HelpUI} from './Help.js';
 import {IdentityUI} from './IdentityUI.js';
 import {InitProjectUI} from './InitProjectUI.js';
-import SettingsUI from './SettingsUI.js';
+import SettingsUI, {SetupDoneUI} from './SettingsUI.js';
 import {Topbar} from './Topbar.js';
 import {WorkspaceUI} from './WorkspaceUI.js';
 import {AutoSyncController} from './AutoSyncController.js';
 import {EventLogWatchController} from './EventLogWatchController.js';
 import {useSettingsState} from '../state/settings.state.js';
+import {useSetupSession} from '../state/setup-session.state.js';
 
 type EpiqAppProps = {
 	height: number;
@@ -25,6 +26,7 @@ type EpiqAppProps = {
 export default function EpiqApp({width, height}: EpiqAppProps) {
 	const state = useAppState();
 	const {autoSync, viewMode} = useSettingsState();
+	const setupSession = useSetupSession();
 
 	const filters = state.filters;
 
@@ -61,11 +63,26 @@ export default function EpiqApp({width, height}: EpiqAppProps) {
 
 	const {isSetupDone} = getUserSetupStatus();
 
-	const isSetupMode = !isSetupDone;
+	// A `:setup` rerun shows the steps again, over a board or not.
+	const isSetupMode = !isSetupDone || setupSession.rerunStep !== undefined;
 	const isUninitializedRepo = isSetupDone && !state.hasProjectDefinition;
 
 	// The setup and init screens carry their own instructions; the board's
 	// shortcuts do nothing there.
+
+	// Read off the answers, so the frame that saves the last one already shows it.
+	if (isSetupFinished()) {
+		return (
+			<Box flexDirection="column">
+				<Box flexDirection="column">
+					<Topbar hideBreadCrumb filters={filters} />
+					<SetupDoneUI height={height} width={width} />
+				</Box>
+
+				<ContextBar width={width} mode={state.mode} availableHints={[]} />
+			</Box>
+		);
+	}
 
 	if (isSetupMode) {
 		return (

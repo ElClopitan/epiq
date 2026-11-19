@@ -22,7 +22,7 @@ import {
 	useCardDensityView,
 } from '../lib/card-density';
 import {Button} from './Button';
-import {GoalLabel, GoalStripe} from './GoalMarks';
+import {goalFilterTitle, GoalLabel} from './GoalMarks';
 import {DiffStat} from './DiffStat';
 import {CardActivity, DwellLevel} from '../lib/lane-dwell';
 import {formatDuration} from '../lib/gui-format.helper';
@@ -91,42 +91,6 @@ const DiffButton = ({
 				lit={hovered}
 			/>
 		</button>
-	);
-};
-
-// Breathes for recent activity; driven on the element so re-renders don't restart it.
-const LiveDot = () => {
-	const ref = useRef<HTMLSpanElement | null>(null);
-	const color = GUI_THEME.accent;
-
-	useEffect(() => {
-		const dot = ref.current;
-		if (!dot) return;
-		if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-
-		const animation = dot.animate(
-			[
-				{opacity: 1, boxShadow: `0 0 0 0 ${color}`},
-				{opacity: 0.55, boxShadow: `0 0 0 3px ${color}00`},
-				{opacity: 1, boxShadow: `0 0 0 0 ${color}`},
-			],
-			{duration: 1800, iterations: Infinity, easing: 'ease-in-out'},
-		);
-
-		return () => animation.cancel();
-	}, [color]);
-
-	return (
-		<span
-			ref={ref}
-			style={{
-				width: DENSE_MARKER_SIZE,
-				height: DENSE_MARKER_SIZE,
-				borderRadius: 999,
-				background: color,
-				flexShrink: 0,
-			}}
-		/>
 	);
 };
 
@@ -392,8 +356,7 @@ const DenseBody = ({
 					/>
 				</span>
 
-				{/* What its commits came to: a bar one size on every row between
-				    what was added and what was removed. */}
+				{/* What its commits came to: the figures only, no bar. */}
 				<DiffButton diff={diff} onOpen={onOpenCode} variant="row" />
 
 				<span style={{flex: 1}} />
@@ -406,7 +369,6 @@ const DenseBody = ({
 						flexShrink: 0,
 					}}
 				>
-					{/* Squared, so a tag never reads as the round live dot. */}
 					{ticket.tags.slice(0, DENSE_MAX_TAGS).map(tag => (
 						<TagMark
 							key={tag.id}
@@ -415,7 +377,7 @@ const DenseBody = ({
 							onFilter={() => onFilterByTag(tag.id)}
 						/>
 					))}
-					{/* The rest named on hover rather than run off the card. */}
+					{/* The rest counted, and named on hover, rather than run off the card. */}
 					{ticket.tags.length > DENSE_MAX_TAGS && (
 						<span
 							data-testid="ticket-tags-more"
@@ -425,7 +387,7 @@ const DenseBody = ({
 								.join(', ')}
 							style={{color: GUI_THEME.dim, lineHeight: 1}}
 						>
-							…
+							+{ticket.tags.length - DENSE_MAX_TAGS}
 						</span>
 					)}
 
@@ -436,16 +398,6 @@ const DenseBody = ({
 							style={{display: 'inline-flex', color: GUI_THEME.amber}}
 						>
 							<IconClock size={10} />
-						</span>
-					)}
-
-					{activity === 'live' && (
-						<span
-							data-testid="ticket-live"
-							title="Board activity in the last five minutes"
-							style={{display: 'inline-flex'}}
-						>
-							<LiveDot />
 						</span>
 					)}
 				</span>
@@ -478,7 +430,7 @@ export const TicketCard = ({
 	onFilterByGoal,
 }: {
 	ticket: GuiIssue;
-	// The goal the board is narrowed to, and narrowing to one from its pill.
+	// The goal the board is narrowed to, and narrowing to one from its label.
 	isolatedGoalId?: string | null;
 	onFilterByGoal?: (goalId: string) => void;
 	index: number;
@@ -556,9 +508,7 @@ export const TicketCard = ({
 			{...(onFilterByGoal && {
 				pressed: goalIsolated,
 				onPress: () => onFilterByGoal(goal.id),
-				pressTitle: goalIsolated
-					? 'Show every ticket again'
-					: 'Show only this goal',
+				pressTitle: goalFilterTitle(goalIsolated),
 			})}
 		/>
 	) : null;
@@ -621,7 +571,7 @@ export const TicketCard = ({
 				// Selected is a step up the same wash, not another colour.
 				background:
 					isSelected || isPicked
-						? 'rgba(185, 192, 255, 0.1)'
+						? GUI_THEME.selectedWash
 						: 'rgba(185, 192, 255, 0.065)',
 				// Roomier than a list row.
 				padding: view.metrics.padding,
@@ -637,7 +587,6 @@ export const TicketCard = ({
 				animation: theatre ? THEATRE_CARD_IN_ANIMATION : undefined,
 			}}
 		>
-			{goal && <GoalStripe color={goal.color} inset={view.metrics.radius} />}
 			{dense ? (
 				<DenseBody
 					goal={goalLabel}

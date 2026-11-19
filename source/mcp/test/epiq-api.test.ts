@@ -699,6 +699,35 @@ describe('mcp tools', () => {
 			expect(result.value.olderComments).toBeUndefined();
 		});
 
+		it('returns only the latest comments whole with latestComments', async () => {
+			const long = 'x'.repeat(4000);
+			const read = async (latestComments: number) => {
+				vi.mocked(
+					nodeRepoModule.nodeRepo.getCommentsByIssue,
+				).mockReturnValueOnce(thread(['1', long, '3', '4', long]));
+				const result = await tools.getIssue({
+					repoRoot: '/repo',
+					idOrRef: fixtureId('issue-1'),
+					latestComments,
+				});
+				if (isFail(result)) throw new Error(result.message);
+				return result.value;
+			};
+
+			const two = await read(2);
+			expect(two.comments.map(c => c.body)).toEqual(['4', long]);
+			expect(two.omittedComments).toBe(3);
+			expect(two.olderComments).toBeUndefined();
+
+			const none = await read(0);
+			expect(none.comments).toEqual([]);
+			expect(none.omittedComments).toBe(5);
+
+			const more = await read(9);
+			expect(more.comments).toHaveLength(5);
+			expect(more.omittedComments).toBeUndefined();
+		});
+
 		// The inverse of the commit-prefix convention: ref in, ticket out.
 		it('finds an issue by its ref', async () => {
 			const result = await tools.getIssue({

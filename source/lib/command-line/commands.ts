@@ -2,7 +2,7 @@ import {exportBoardLayout} from '../../export/export.js';
 import {navigationUtils} from '../actions/default/navigation-action-utils.js';
 import {CommandLineActionEntry, Mode} from '../model/action-map.model.js';
 import {Filter} from '../model/app-state.model.js';
-import {failed, isFail, succeeded} from '../model/result-types.js';
+import {failed, isFail, isSuccess, succeeded} from '../model/result-types.js';
 import {getCmdState} from '../state/cmd.state.js';
 import {getState, patchState, updateState} from '../state/state.js';
 import {patchUiState} from '../state/ux-state.js';
@@ -33,7 +33,12 @@ import {assignUserCommand} from './commands/assign-user.cmd.js';
 import {unassignUserCommand} from './commands/unassign-user.cmd.js';
 import {commentCommand} from './commands/comment.cmd.js';
 import {configCommand} from './commands/config.cmd.js';
-import {advanceSetup} from './setup-flow.js';
+import {
+	advanceSetup,
+	noteConfigAnswered,
+	openSetupRerunStep,
+	startSetupRerun,
+} from './setup-flow.js';
 
 export const commands: CommandLineActionEntry[] = [
 	{
@@ -122,6 +127,16 @@ export const commands: CommandLineActionEntry[] = [
 		// After `commandConfirmed`, which clears the line: a prefill written
 		// inside the command would be wiped by it.
 		onSuccess: advanceSetup,
+	},
+	{
+		intent: CmdIntent.Setup,
+		description: 'Answer the setup questions for this machine again',
+		mode: Mode.COMMAND_LINE,
+		action: () => {
+			startSetupRerun();
+			return succeeded('Setup', null);
+		},
+		onSuccess: openSetupRerunStep,
 	},
 	{
 		intent: CmdIntent.OpenProject,
@@ -269,7 +284,11 @@ export const commands: CommandLineActionEntry[] = [
 		intent: CmdIntent.Config,
 		description: 'Update editor, username, view, autosync, or sync debounce',
 		mode: Mode.COMMAND_LINE,
-		action: (_, cmdState) => configCommand(cmdState),
+		action: async (_, cmdState) => {
+			const result = await configCommand(cmdState);
+			if (isSuccess(result)) noteConfigAnswered(cmdState.modifier);
+			return result;
+		},
 		// Mid-setup this opens the next step already typed; once setup is done
 		// it just closes the line, which is what every other command does.
 		onSuccess: advanceSetup,

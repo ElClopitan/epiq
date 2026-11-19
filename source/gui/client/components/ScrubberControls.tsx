@@ -3,6 +3,7 @@
 import {useRef} from 'react';
 import {GUI_THEME, SANS_FONT} from '../lib/gui-theme';
 import {useGlowGradient} from './Panel';
+import {GroupLabel} from './GroupLabel';
 import {
 	isPeriodWindow,
 	LayoutMode,
@@ -311,17 +312,7 @@ export const ScrubberControls = ({
 			{/* The row's slack, between the window controls and the pickers. */}
 			<div aria-hidden style={{flex: '1 1 0', minWidth: 0}} />
 
-			<LabelledGroup
-				label="Filter"
-				style={{
-					// A touch closer than the row's own gap: this is one group of
-					// narrowings, and it is the row's widest at a laptop's width.
-					gap: 10,
-					// Shrinkable past its content, which is what lets the text filter
-					// in it give way on a tight row; nothing else in here can.
-					minWidth: 0,
-				}}
-			>
+			<LabelledGroup label="Filter commits">
 				<CommitSeriesGroup
 					connected={connected}
 					idle={layoutMode === 'flow'}
@@ -335,6 +326,19 @@ export const ScrubberControls = ({
 					onChangeLinesMeasure={onChangeLinesMeasure}
 					onToggleRepo={onToggleCommitRepo}
 				/>
+			</LabelledGroup>
+
+			<LabelledGroup
+				label="Filter board"
+				style={{
+					// A touch closer than the row's own gap: the board's narrowings
+					// are one group, and the row's widest at a laptop's width.
+					gap: 10,
+					// Shrinkable past its content, which is what lets the text filter
+					// in it give way on a tight row; nothing else in here can.
+					minWidth: 0,
+				}}
+			>
 				<BoardSeriesGroup
 					connected={connected}
 					showIssues={showIssues}
@@ -424,62 +428,30 @@ const LabelledGroup = ({
 	label: string;
 	style?: React.CSSProperties;
 	children: React.ReactNode;
-}) => {
-	const labelRef = useRef<HTMLSpanElement>(null);
-	const {glow, gradient} = useGlowGradient(labelRef);
-
-	return (
-		<div
-			data-group-label={label}
+}) => (
+	<div
+		data-group-label={label}
+		style={{
+			position: 'relative',
+			display: 'flex',
+			alignItems: 'center',
+			alignSelf: 'stretch',
+			...style,
+		}}
+	>
+		<GroupLabel
+			label={label}
 			style={{
-				position: 'relative',
-				display: 'flex',
-				alignItems: 'center',
-				alignSelf: 'stretch',
-				...style,
+				position: 'absolute',
+				left: 0,
+				bottom: '100%',
+				marginBottom: 4,
+				pointerEvents: 'none',
 			}}
-		>
-			<span
-				ref={labelRef}
-				aria-hidden
-				style={{
-					position: 'absolute',
-					left: 0,
-					bottom: '100%',
-					marginBottom: 4,
-					fontFamily: SANS_FONT,
-					fontSize: 8,
-					lineHeight: 1,
-					letterSpacing: '0.1em',
-					textTransform: 'uppercase',
-					whiteSpace: 'nowrap',
-					pointerEvents: 'none',
-					userSelect: 'none',
-				}}
-			>
-				{/* Two copies side by side, so the faint one's opacity doesn't cap the lit one. */}
-				<span style={{color: GUI_THEME.dim, opacity: 0.6}}>{label}</span>
-				{/* The lit copy over the faint one, the glow's gradient clipped to
-				    its letters, fading in and out on the border's own clock. */}
-				<span
-					style={{
-						position: 'absolute',
-						inset: 0,
-						color: 'transparent',
-						backgroundImage: gradient,
-						WebkitBackgroundClip: 'text',
-						backgroundClip: 'text',
-						opacity: glow.strength,
-						transition: 'opacity 140ms ease',
-					}}
-				>
-					{label}
-				</span>
-			</span>
-			{children}
-		</div>
-	);
-};
+		/>
+		{children}
+	</div>
+);
 
 // Narrows the board to tickets active in the window. Goes flat while the
 // ticket narrowing is on.
